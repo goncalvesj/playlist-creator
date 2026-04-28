@@ -1,0 +1,17 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "description": "Azure Functions backend for DJ Set Playlist Creator",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "prestart": "npm run build",
+    "start": "func start"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "@azure/functions": "^3.5.1",
+    "openai": "^6.34.0",
+    "zod": "^4.3.6"
+  }
+}

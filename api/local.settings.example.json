@@ -1,0 +1,12 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "YOUTUBE_API_KEY": "",
+    "AZURE_OPENAI_TARGET_URI": "",
+    "AZURE_OPENAI_MODEL": "",
+    "AZURE_OPENAI_API_KEY": "",
+    "AZURE_OPENAI_API_VERSION": "v1"
+  }
+}

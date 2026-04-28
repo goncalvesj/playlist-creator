@@ -1,0 +1,6 @@
+local.settings.json
+node_modules
+*.log
+*.tsbuildinfo
+.vscode
+coverage
