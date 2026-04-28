@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-A browser-based web app that takes a YouTube DJ set URL, extracts the tracklist from the video's description or pinned/top comment using an LLM, then creates a Spotify playlist with the matched tracks in the logged-in user's account.
+A browser-based web app that takes a YouTube DJ set URL, extracts the tracklist from the video's description using an LLM, then creates a Spotify playlist with the matched tracks in the logged-in user's account.
 
 **Scope:** Personal use for the owner and a small number of friends (Spotify Development Mode, ≤25 users).
 
@@ -45,7 +45,7 @@ Azure Static Web App
 ### Backend (Azure Functions, Node 20)
 - **HTTP trigger** under `/api/extract-tracklist`
 - **YouTube Data API v3** via plain `fetch`
-- **Azure AI Foundry** via the `openai` npm package using `AzureOpenAI` client
+- **Azure AI Foundry** via the `openai` npm package using the v1 `OpenAI` client
 - **Validation:** `zod` for request body and LLM response shape
 
 ### Hosting
@@ -81,7 +81,6 @@ Azure Static Web App
   - **Target URI** → `AZURE_OPENAI_TARGET_URI=https://xxxx.services.ai.azure.com/api/projects/proj-default/openai/v1/responses`
   - **Model/deployment name** → `AZURE_OPENAI_MODEL=gpt-4.1-mini-1`
   - **API key** → `AZURE_OPENAI_API_KEY`
-  - **API version** → `AZURE_OPENAI_API_VERSION=v1`
 - Store these values as SWA application settings. Keep `AZURE_OPENAI_API_KEY` server-side only.
 
 ### 4.4 Azure Static Web App
@@ -92,7 +91,6 @@ Azure Static Web App
   - `AZURE_OPENAI_TARGET_URI`
   - `AZURE_OPENAI_API_KEY`
   - `AZURE_OPENAI_MODEL`
-  - `AZURE_OPENAI_API_VERSION` (e.g. `v1`)
 
 ---
 
@@ -152,7 +150,7 @@ Content-Type: application/json
   "videoId": "abc123",
   "videoTitle": "Boiler Room: Artist Name | Live Set",
   "channelTitle": "Boiler Room",
-  "source": "description | pinned_comment | top_comment",
+  "source": "description",
   "confidence": "high | medium | low",
   "tracks": [
     { "artist": "Daft Punk", "title": "Around the World (Alex Gopher Remix)", "timestamp": "00:12:34" }
@@ -169,14 +167,9 @@ Content-Type: application/json
 
 1. **Parse URL** — accept `youtube.com/watch?v=`, `youtu.be/`, `youtube.com/shorts/`, `youtube.com/live/`. Reject anything else with `400`.
 2. **Fetch video metadata** via `videos.list?part=snippet&id=<id>&key=<KEY>`. Capture `title`, `channelTitle`, `description`.
-3. **Fetch top comments** via `commentThreads.list?part=snippet&videoId=<id>&order=relevance&maxResults=20&key=<KEY>`. Identify the **pinned** comment if present (YouTube's API doesn't expose `isPinned` directly; treat the highest-relevance comment by the video's channel author as a strong proxy, plus include the top 1–2 comments by like count as fallbacks).
-4. **Pick the best source text** in this order:
-   - Description, if it contains ≥ 3 lines that look like tracks (heuristic: contains a `-` or `–` separator, or has a leading timestamp pattern like `\d{1,2}:\d{2}`).
-   - Pinned/author comment, same heuristic.
-   - Top comment by likes, same heuristic.
-   - If none qualify → return `404` with a clear message.
-5. **Call Foundry** (see §6.3) with the chosen source text. Tag the response with `source` indicating where the text came from.
-6. **Return** the structured response.
+3. **Pick the source text** from the description only, if it contains ≥ 3 lines that look like tracks (heuristic: contains a `-` or `–` separator, or has a leading timestamp pattern like `\d{1,2}:\d{2}`). If it does not qualify → return `404` with a clear message.
+4. **Call Foundry** (see §6.3) with the description text. Tag the response with `source: "description"`.
+5. **Return** the structured response.
 
 ### 6.3 LLM Call (Azure AI Foundry)
 
@@ -211,7 +204,7 @@ Content-Type: application/json
 
 **System prompt (verbatim)**
 ```
-You extract DJ set tracklists from YouTube video text (description or comment).
+You extract DJ set tracklists from a YouTube video description.
 Return ONLY tracks present in the input — never invent tracks.
 Normalize each track into { artist, title, timestamp }.
 - artist: the primary artist; if multiple, join with " & ".
@@ -223,7 +216,7 @@ Set confidence to "high" if the list is clearly delimited and consistently forma
 "medium" if mostly clear but some lines are ambiguous, "low" otherwise.
 ```
 
-**User message:** the chosen source text, prefixed with a single line `SOURCE: <description|pinned_comment|top_comment>`.
+**User message:** the description text, prefixed with a single line `SOURCE: description`.
 
 **Validate** the response with `zod` before returning. If validation fails or `tracks.length === 0`, return `404`.
 
@@ -320,7 +313,6 @@ The user can override any auto-selection in the Review table before creating the
 - `AZURE_OPENAI_TARGET_URI`
 - `AZURE_OPENAI_API_KEY`
 - `AZURE_OPENAI_MODEL`
-- `AZURE_OPENAI_API_VERSION`
 
 ### 8.3 Local dev
 - Run SPA: `npm run dev` (Vite on `:5173`).

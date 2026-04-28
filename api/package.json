@@ -9,9 +9,10 @@
     "start": "func start"
   },
   "type": "commonjs",
+  "main": "dist/src/{index.js,functions/*.js}",
   "dependencies": {
-    "@azure/functions": "^3.5.1",
-    "openai": "^6.34.0",
+    "@azure/functions": "^4.14.0",
+    "openai": "^6.35.0",
     "zod": "^4.3.6"
   }
 }
