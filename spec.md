@@ -1,144 +1,147 @@
-# DJ Set → Spotify Playlist Web App — Implementation Spec
+# DJ Set -> Spotify Playlist - Current Implementation Spec
 
-## 1. Overview
+## 1. Scope
 
-A browser-based web app that takes a YouTube DJ set URL, extracts the tracklist from the video's description or pinned/top comment using an LLM, then creates a Spotify playlist with the matched tracks in the logged-in user's account.
+This repository contains a browser-based web app that takes a YouTube DJ set URL, extracts a tracklist from the video's description, searches Spotify for matching tracks, and creates a Spotify playlist in the logged-in user's account.
 
-**Scope:** Personal use for the owner and a small number of friends (Spotify Development Mode, ≤25 users).
+The current implementation is an MVP for personal use and a small set of approved Spotify users. It is not a public multi-tenant product.
 
-**Non-goals (MVP):**
-- No audio fingerprinting (Shazam/ACRCloud).
-- No OCR of video frames.
-- No persistence / history of past conversions.
-- No multi-tenant / public-facing user management.
+### In scope
 
----
+- Spotify Authorization Code with PKCE in the browser.
+- YouTube video-description extraction through a same-origin Azure Function.
+- Azure AI Foundry v1 Responses API structured-output extraction.
+- Spotify search, fuzzy matching, review, playlist creation, and batched track insertion.
+- Azure Static Web Apps local emulation and manual deployment with a PowerShell script.
+
+### Out of scope
+
+- Audio fingerprinting.
+- OCR of video frames.
+- Captions, comments, or web scraping outside the YouTube Data API snippet description.
+- Persistence or history of past conversions.
+- Public multi-user mode or Spotify Extended Quota workflow.
+- Background jobs or queued processing.
 
 ## 2. Architecture
 
-```
+```text
 Azure Static Web App
-├── /                          → Vite-built SPA (React + TypeScript)
-│                                ├─ Spotify Authorization Code + PKCE (browser)
-│                                └─ Spotify Web API calls (browser, with user token)
-└── /api/extract-tracklist     → Azure Function (Node 20, HTTP trigger)
-                                  ├─ YouTube Data API v3 (server-side key)
-                                  └─ Azure AI Foundry (server-side key, structured output)
+|-- /                         Vite-built SPA (React + TypeScript)
+|   |-- Spotify PKCE          Browser-only token handling
+|   `-- Spotify Web API       Search, profile, playlist creation, add tracks
+|
+`-- /api/extract-tracklist    Azure Function v4, Node.js 20
+    |-- YouTube Data API v3   Server-side key
+    `-- Azure AI Foundry      Server-side key and model deployment
 ```
 
-- **One deploy unit** via the SWA GitHub Action (SPA + functions together).
-- **Same-origin** `/api/*` — no CORS configuration needed.
-- **Secrets** (YouTube API key, Foundry endpoint/key/deployment) live in SWA application settings; never shipped to the browser.
-- **Spotify token** lives in the browser only — backend never touches Spotify.
+The SPA calls the backend through same-origin `/api/*`, so no CORS configuration is required. YouTube and Azure AI Foundry secrets are only read by the API. The Spotify token and playlist calls stay in the browser.
 
----
+Deployment in the repository is currently manual through `deploy-static-web-app.ps1`. There is no tracked GitHub Actions workflow in the current repository state.
 
-## 3. Tech Stack
+## 3. Tech stack
 
 ### Frontend
-- **Vite + React + TypeScript**
-- **State / async:** `@tanstack/react-query`
-- **UI:** `shadcn/ui` + Tailwind CSS
-- **Spotify SDK:** `@spotify/web-api-ts-sdk` (supports PKCE out of the box)
-- **Fuzzy matching:** `fast-fuzzy` (used in the SPA when scoring Spotify search results)
 
-### Backend (Azure Functions, Node 20)
-- **HTTP trigger** under `/api/extract-tracklist`
-- **YouTube Data API v3** via plain `fetch`
-- **Azure AI Foundry** via the `openai` npm package using `AzureOpenAI` client
-- **Validation:** `zod` for request body and LLM response shape
+- Vite, React, TypeScript.
+- React Router for pages.
+- `@tanstack/react-query` for the extraction mutation.
+- Tailwind CSS v4 through `@tailwindcss/vite`.
+- `@spotify/web-api-ts-sdk` for Spotify PKCE auth and Web API calls.
+- `fast-fuzzy` for match scoring.
+- `p-limit` for Spotify search concurrency.
 
-### Hosting
-- **Azure Static Web Apps**, Free tier
-- **Node 20** runtime for managed functions
-- Deployed via the GitHub Action that SWA scaffolds
+The UI is custom React markup styled with Tailwind classes. `shadcn/ui` is not currently installed or used.
 
----
+### Backend
 
-## 4. External Services & Setup
+- Azure Functions v4 for Node.js 20.
+- TypeScript compiled with `tsc`.
+- `openai` package for Azure AI Foundry v1 Responses API calls.
+- `zod` for request-body and model-output validation.
 
-### 4.1 Spotify Developer App
-- Register an app at https://developer.spotify.com/dashboard
-- **Redirect URIs:**
-  - `http://127.0.0.1:5173/callback` (dev)
-  - `https://<swa-name>.azurestaticapps.net/callback` (prod)
-- **Required scopes:**
-  - `playlist-modify-private`
-  - `playlist-modify-public`
-  - `user-read-private`
-- App stays in **Development Mode**; add each friend's Spotify account email under "Users and Access".
+### Hosting and deployment
 
-### 4.2 YouTube Data API v3
-- Create a project in Google Cloud Console.
-- Enable **YouTube Data API v3**.
-- Create an **API key**.
-- Restrict the key to the YouTube Data API v3 only (referrer restriction won't work; the call is server-side).
-- Stored as `YOUTUBE_API_KEY` in SWA application settings.
+- Azure Static Web Apps.
+- `staticwebapp.config.json` sets navigation fallback and `apiRuntime` to `node:20`.
+- `deploy-static-web-app.ps1` deploys `dist` and optionally the `api` folder with `npx @azure/static-web-apps-cli@latest deploy`.
 
-### 4.3 Azure AI Foundry
-- Deploy a model (recommended: `gpt-4.1-mini` for cost-effective structured extraction).
-- Current Foundry deployment:
-  - **Target URI** → `AZURE_OPENAI_TARGET_URI=https://xxxx.services.ai.azure.com/api/projects/proj-default/openai/v1/responses`
-  - **Model/deployment name** → `AZURE_OPENAI_MODEL=gpt-4.1-mini-1`
-  - **API key** → `AZURE_OPENAI_API_KEY`
-  - **API version** → `AZURE_OPENAI_API_VERSION=v1`
-- Store these values as SWA application settings. Keep `AZURE_OPENAI_API_KEY` server-side only.
+## 4. Repository layout
 
-### 4.4 Azure Static Web App
-- Create an SWA resource (Free tier).
-- Connect to the GitHub repo; SWA generates the deployment workflow.
-- Configure under **Configuration → Application settings**:
-  - `YOUTUBE_API_KEY`
-  - `AZURE_OPENAI_TARGET_URI`
-  - `AZURE_OPENAI_API_KEY`
-  - `AZURE_OPENAI_MODEL`
-  - `AZURE_OPENAI_API_VERSION` (e.g. `v1`)
-
----
-
-## 5. Repository Layout
-
-```
-/
-├── .github/workflows/azure-static-web-apps.yml  (generated by SWA)
-├── api/                                         (Azure Functions)
-│   ├── extract-tracklist/
-│   │   ├── function.json
-│   │   └── index.ts
-│   ├── package.json
-│   └── tsconfig.json
-├── src/                                         (React SPA)
-│   ├── main.tsx
-│   ├── App.tsx
-│   ├── auth/
-│   │   ├── spotifyAuth.ts                       (PKCE flow)
-│   │   └── useSpotify.ts                        (hook returning SDK instance)
-│   ├── api/
-│   │   └── extractTracklist.ts                  (calls /api/extract-tracklist)
-│   ├── matching/
-│   │   ├── searchSpotify.ts
-│   │   └── scoreMatch.ts
-│   ├── pages/
-│   │   ├── Home.tsx                             (URL input)
-│   │   ├── Review.tsx                           (matched tracks table)
-│   │   └── Done.tsx                             (success + missing tracks)
-│   └── components/
-│       └── TrackRow.tsx
-├── public/
-├── staticwebapp.config.json                     (auth/route config)
-├── index.html
-├── package.json
-├── tsconfig.json
-└── vite.config.ts
+```text
+.
+|-- api\
+|   |-- .funcignore
+|   |-- host.json
+|   |-- local.settings.example.json
+|   |-- package.json
+|   |-- tsconfig.json
+|   `-- src\functions\extract-tracklist.ts
+|-- public\
+|   |-- favicon.svg
+|   `-- icons.svg
+|-- src\
+|   |-- api\extractTracklist.ts
+|   |-- auth\spotifyAuth.ts
+|   |-- auth\useSpotify.ts
+|   |-- components\TrackRow.tsx
+|   |-- matching\scoreMatch.ts
+|   |-- matching\searchSpotify.ts
+|   |-- pages\Home.tsx
+|   |-- pages\Review.tsx
+|   |-- pages\Done.tsx
+|   |-- App.tsx
+|   |-- index.css
+|   `-- main.tsx
+|-- .azure\deployment-plan.md
+|-- .env.example
+|-- deploy-static-web-app.ps1
+|-- index.html
+|-- package.json
+|-- README.md
+|-- staticwebapp.config.json
+|-- tsconfig*.json
+`-- vite.config.ts
 ```
 
----
+## 5. Configuration
 
-## 6. Backend: `/api/extract-tracklist`
+### Frontend `.env`
 
-### 6.1 Contract
+```text
+VITE_SPOTIFY_CLIENT_ID=<spotify-client-id>
+VITE_SPOTIFY_REDIRECT_URI=http://127.0.0.1:5173/callback
+```
 
-**Request**
+`VITE_SPOTIFY_REDIRECT_URI` defaults to the current origin plus `/callback`, with `localhost` redirected to `127.0.0.1` for local Spotify redirect consistency.
+
+### Backend settings
+
+Local settings are stored in `api\local.settings.json` and production settings are stored in Azure Static Web Apps application settings.
+
+Required:
+
+```text
+YOUTUBE_API_KEY=<youtube-data-api-key>
+AZURE_OPENAI_TARGET_URI=<foundry-openai-v1-responses-or-base-url>
+AZURE_OPENAI_MODEL=<model-or-deployment-name>
+AZURE_OPENAI_API_KEY=<foundry-api-key>
+```
+
+Accepted aliases:
+
+- `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_ENDPOINT` for `AZURE_OPENAI_TARGET_URI`.
+- `AZURE_OPENAI_DEPLOYMENT` for `AZURE_OPENAI_MODEL`.
+
+Optional diagnostics:
+
+- `AZURE_OPENAI_LOG_OUTPUT_PREVIEW=true` logs truncated model output previews. Leave it unset unless actively debugging.
+
+## 6. Backend API: `/api/extract-tracklist`
+
+### Request
+
 ```http
 POST /api/extract-tracklist
 Content-Type: application/json
@@ -146,45 +149,66 @@ Content-Type: application/json
 { "youtubeUrl": "https://www.youtube.com/watch?v=..." }
 ```
 
-**Response (200)**
-```json
-{
-  "videoId": "abc123",
-  "videoTitle": "Boiler Room: Artist Name | Live Set",
-  "channelTitle": "Boiler Room",
-  "source": "description | pinned_comment | top_comment",
-  "confidence": "high | medium | low",
-  "tracks": [
-    { "artist": "Daft Punk", "title": "Around the World (Alex Gopher Remix)", "timestamp": "00:12:34" }
-  ]
-}
+The request body is validated with Zod as `{ youtubeUrl: z.string().url() }`.
+
+### Supported YouTube URL forms
+
+- `youtube.com/watch?v=<id>`
+- `youtu.be/<id>`
+- `youtube.com/shorts/<id>`
+- `youtube.com/live/<id>`
+
+Any other form returns `400`.
+
+### Metadata fetch
+
+The API calls:
+
+```text
+https://www.googleapis.com/youtube/v3/videos?part=snippet&id=<videoId>&key=<YOUTUBE_API_KEY>
 ```
 
-**Errors**
-- `400` invalid URL or missing video ID
-- `404` video not found / no extractable tracklist
-- `502` upstream failure (YouTube or Foundry)
+It uses `snippet.title`, `snippet.channelTitle`, and `snippet.description`.
 
-### 6.2 Steps
+### Source selection
 
-1. **Parse URL** — accept `youtube.com/watch?v=`, `youtu.be/`, `youtube.com/shorts/`, `youtube.com/live/`. Reject anything else with `400`.
-2. **Fetch video metadata** via `videos.list?part=snippet&id=<id>&key=<KEY>`. Capture `title`, `channelTitle`, `description`.
-3. **Fetch top comments** via `commentThreads.list?part=snippet&videoId=<id>&order=relevance&maxResults=20&key=<KEY>`. Identify the **pinned** comment if present (YouTube's API doesn't expose `isPinned` directly; treat the highest-relevance comment by the video's channel author as a strong proxy, plus include the top 1–2 comments by like count as fallbacks).
-4. **Pick the best source text** in this order:
-   - Description, if it contains ≥ 3 lines that look like tracks (heuristic: contains a `-` or `–` separator, or has a leading timestamp pattern like `\d{1,2}:\d{2}`).
-   - Pinned/author comment, same heuristic.
-   - Top comment by likes, same heuristic.
-   - If none qualify → return `404` with a clear message.
-5. **Call Foundry** (see §6.3) with the chosen source text. Tag the response with `source` indicating where the text came from.
-6. **Return** the structured response.
+The current source selector only accepts the YouTube description. A description qualifies when it contains at least three non-empty lines that match either:
 
-### 6.3 LLM Call (Azure AI Foundry)
+- a timestamp-like pattern: `\d{1,2}:\d{2}`
+- a spaced dash separator: ` - ` or ` – `
 
-- Use the `openai` package with the Azure AI Foundry v1 Responses API target URI.
-- Model: the deployment name from `AZURE_OPENAI_MODEL`.
-- Use **structured outputs** with `text.format: { type: "json_schema", name: "tracklist", schema: { ... }, strict: true }`.
+If the description does not qualify, the API returns `404` with `No tracklist found in video description.`
 
-**JSON schema returned by the model**
+### Azure AI Foundry request
+
+The API normalizes the configured Foundry URI into an OpenAI-compatible base URL. It accepts either a base URL or a full `/responses` target URI.
+
+The Responses API call uses:
+
+- `model`: `AZURE_OPENAI_MODEL` or `AZURE_OPENAI_DEPLOYMENT`.
+- `instructions`: the system prompt below.
+- `input`: `SOURCE: description` followed by the selected description text.
+- `text.format`: strict JSON schema named `tracklist`.
+- `temperature`: `0`.
+- `max_output_tokens`: `4096`.
+
+System prompt:
+
+```text
+You extract DJ set tracklists from a YouTube video description.
+Return ONLY tracks present in the input — never invent tracks.
+Normalize each track into { artist, title, timestamp }.
+- artist: the primary artist; if multiple, join with " & ".
+- title: include remix/edit info in parentheses if present (e.g. "Song (Extended Mix)").
+- timestamp: HH:MM:SS or MM:SS if present in the source line, else null.
+Strip leading numbering (e.g. "1.", "01)", "Track 3:").
+If the input does not contain a tracklist, return tracks: [] and confidence: "low".
+Set confidence to "high" if the list is clearly delimited and consistently formatted,
+"medium" if mostly clear but some lines are ambiguous, "low" otherwise.
+```
+
+Expected model schema:
+
 ```json
 {
   "type": "object",
@@ -199,8 +223,8 @@ Content-Type: application/json
         "additionalProperties": false,
         "required": ["artist", "title", "timestamp"],
         "properties": {
-          "artist":    { "type": "string" },
-          "title":     { "type": "string" },
+          "artist": { "type": "string" },
+          "title": { "type": "string" },
           "timestamp": { "type": ["string", "null"] }
         }
       }
@@ -209,160 +233,166 @@ Content-Type: application/json
 }
 ```
 
-**System prompt (verbatim)**
-```
-You extract DJ set tracklists from YouTube video text (description or comment).
-Return ONLY tracks present in the input — never invent tracks.
-Normalize each track into { artist, title, timestamp }.
-- artist: the primary artist; if multiple, join with " & ".
-- title: include remix/edit info in parentheses if present (e.g. "Song (Extended Mix)").
-- timestamp: HH:MM:SS or MM:SS if present in the source line, else null.
-Strip leading numbering (e.g. "1.", "01)", "Track 3:").
-If the input does not contain a tracklist, return tracks: [] and confidence: "low".
-Set confidence to "high" if the list is clearly delimited and consistently formatted,
-"medium" if mostly clear but some lines are ambiguous, "low" otherwise.
-```
+### Successful response
 
-**User message:** the chosen source text, prefixed with a single line `SOURCE: <description|pinned_comment|top_comment>`.
-
-**Validate** the response with `zod` before returning. If validation fails or `tracks.length === 0`, return `404`.
-
----
-
-## 7. Frontend
-
-### 7.1 Spotify PKCE auth
-
-Use `@spotify/web-api-ts-sdk` with `SpotifyApi.withUserAuthorization(clientId, redirectUri, scopes)`.
-
-- Client ID is a **public value** — embed it in the build via a `VITE_SPOTIFY_CLIENT_ID` env var.
-- Token cache: in-memory + `sessionStorage` (the SDK handles this — keep its default storage).
-- Refresh proactively before expiry.
-- On 401, clear cache and re-trigger the auth flow.
-
-### 7.2 Pages / flow
-
-1. **Home (`/`)**
-   - "Sign in with Spotify" button (if not authed).
-   - Input: YouTube URL.
-   - "Extract tracklist" button → POST `/api/extract-tracklist`.
-   - On success → navigate to `/review` with the response in state.
-
-2. **Review (`/review`)**
-   - For each extracted track, run `searchSpotify` (see §7.3).
-   - Render a table:
-     - Columns: `#`, Extracted artist, Extracted title, Best Spotify match (album art + artist + title + duration), Match score, Status (✅ Auto / ⚠️ Review / ❌ Not found), action menu (pick alternate, edit query, remove).
-   - Inputs at the top:
-     - Playlist name (prefilled from `videoTitle`, editable).
-     - Public/private toggle (default: private).
-   - "Create playlist" button:
-     - POST `https://api.spotify.com/v1/me` to get user ID (or use cached profile).
-     - POST `https://api.spotify.com/v1/users/{user_id}/playlists` with name, `public: false` by default, and description: `Source: <youtubeUrl>`.
-     - POST `https://api.spotify.com/v1/playlists/{id}/tracks` in batches of 100 URIs.
-   - On success → navigate to `/done`.
-
-3. **Done (`/done`)**
-   - Link to the new Spotify playlist.
-   - List of **unmatched tracks** so they can be added manually.
-   - "Convert another" button → back to `/`.
-
-### 7.3 Track matching (`searchSpotify` + `scoreMatch`)
-
-For each extracted `{ artist, title }`:
-
-1. **Primary query:** `track:"<title>" artist:"<artist>"` via `GET /v1/search?type=track&limit=5`.
-2. If `items.length === 0`, **retry** with relaxed query:
-   - Strip parentheticals from title (`(Extended Mix)`, `(Original Mix)`, `(Radio Edit)`, etc.) and re-query.
-   - If still empty, query without field filters: `<artist> <title>` plain text, limit 5.
-3. **Score** each candidate using `fast-fuzzy` against `"<artist> <title>"`:
-   - Combine artist similarity (weight 0.4) and title similarity (weight 0.6).
-4. **Decide:**
-   - Score ≥ 0.85 → status **Auto** (preselected).
-   - 0.65 ≤ Score < 0.85 → status **Review** (preselected but flagged).
-   - Score < 0.65 or no candidates → status **Not found**.
-5. **Concurrency:** run searches in parallel with a max concurrency of **5** (use `p-limit` or similar) to stay well under Spotify rate limits.
-
-The user can override any auto-selection in the Review table before creating the playlist.
-
-### 7.4 Playlist creation
-
-- Default name: from `videoTitle` (editable).
-- Default visibility: **private**.
-- Description (always set): `Source: <youtubeUrl>`.
-- Add only tracks with status **Auto** or **Review** that are still selected.
-- **Unmatched tracks are skipped silently from the playlist** but listed on the Done page.
-
----
-
-## 8. Configuration Files
-
-### 8.1 `staticwebapp.config.json`
 ```json
 {
-  "navigationFallback": {
-    "rewrite": "/index.html",
-    "exclude": ["/api/*", "/assets/*", "/*.{css,js,ico,png,svg}"]
-  },
-  "platform": {
-    "apiRuntime": "node:20"
-  }
+  "videoId": "abc123",
+  "videoTitle": "Boiler Room: Artist Name | Live Set",
+  "channelTitle": "Boiler Room",
+  "source": "description",
+  "confidence": "high",
+  "tracks": [
+    {
+      "artist": "Daft Punk",
+      "title": "Around the World (Alex Gopher Remix)",
+      "timestamp": "00:12:34"
+    }
+  ]
 }
 ```
 
-### 8.2 Environment variables
+### Error responses
 
-**Frontend (`.env`, prefixed `VITE_`):**
-- `VITE_SPOTIFY_CLIENT_ID`
-- `VITE_SPOTIFY_REDIRECT_URI` (e.g. `http://127.0.0.1:5173/callback`)
+- `400` invalid JSON body, invalid request shape, or unsupported YouTube URL.
+- `404` video not found, no tracklist-like description, invalid or empty model tracklist.
+- `502` missing server-side configuration, YouTube API failure, incomplete or invalid AI response, or other upstream failure.
 
-**Backend (SWA application settings, server-side only):**
-- `YOUTUBE_API_KEY`
-- `AZURE_OPENAI_TARGET_URI`
-- `AZURE_OPENAI_API_KEY`
-- `AZURE_OPENAI_MODEL`
-- `AZURE_OPENAI_API_VERSION`
+The function logs detailed Azure AI response diagnostics for incomplete or invalid model output while avoiding full input/output logging by default.
 
-### 8.3 Local dev
-- Run SPA: `npm run dev` (Vite on `:5173`).
-- Run functions + SPA together: `npm run dev:swa` (Static Web Apps CLI on `http://127.0.0.1:5173`, with Vite behind it on port `5174`).
-- Local function settings: `api/local.settings.json` (gitignored) mirrors the SWA app settings.
+## 7. Frontend behavior
 
----
+### Auth
 
-## 9. Build Order (for the implementing agent)
+`src\auth\useSpotify.ts` creates the SDK with:
 
-1. Scaffold Vite + React + TS app and the `api/` Functions project.
-2. Add `staticwebapp.config.json` and the SWA GitHub Actions workflow.
-3. Implement Spotify PKCE login + a "create empty test playlist" button — verify end-to-end auth.
-4. Implement the `/api/extract-tracklist` function:
-   - YouTube fetch
-   - Source-text selection
-   - Foundry call with structured output
-   - Zod validation
-   - Test in isolation with a known DJ set URL.
-5. Implement `searchSpotify` + `scoreMatch` in the SPA.
-6. Build the Home → Review → Done flow.
-7. Wire playlist creation (create + batched add).
-8. Polish: loading states, error toasts, empty states for "no tracklist found".
+```ts
+SpotifyApi.withUserAuthorization(SPOTIFY_CLIENT_ID, SPOTIFY_REDIRECT_URI, SPOTIFY_SCOPES)
+```
 
----
+Scopes:
 
-## 10. Acceptance Criteria
+- `playlist-modify-private`
+- `playlist-modify-public`
+- `user-read-private`
 
-- A user can log in with Spotify via PKCE entirely in the browser.
-- Pasting a YouTube DJ set URL with a tracklist in the description produces a structured tracklist within ~10 seconds.
-- The Review page shows each track's best Spotify match with a clear status, and lets the user override any selection.
-- Clicking "Create playlist" produces a private playlist in the user's Spotify account containing all selected matches, with description `Source: <youtubeUrl>`.
-- Unmatched tracks are listed on the Done page; they are not silently lost.
-- All secrets (YouTube key, Foundry key) remain server-side; only the Spotify Client ID is shipped to the browser.
-- Deployment to Azure Static Web Apps succeeds via the generated GitHub Actions workflow on push to `main`.
+On `/callback`, the app exchanges the authorization code, marks the session authenticated, and replaces browser history with `/`. If a cached token exists, the user is treated as authenticated without forcing a redirect. Logout calls `sdk.logOut()`.
 
----
+### Home
 
-## 11. Out of Scope (Explicit Non-Goals)
+Home shows:
 
-- Persistence of past conversions (planned future addition; would use Azure Table Storage keyed by YouTube video ID).
-- Audio fingerprinting or OCR for tracklists not present as text.
-- Public multi-user mode / requesting Spotify Extended Quota.
-- Background jobs / queued processing.
-- Managed identity for Foundry (API key is sufficient for MVP).
+- Sign in with Spotify when unauthenticated.
+- YouTube URL input when authenticated.
+- Extraction loading and error states.
+
+On extraction success, Home navigates to `/review` with the tracklist response and original YouTube URL in router state.
+
+### Review
+
+Review:
+
+- Runs `matchAllTracks` once for the extracted tracks.
+- Shows extraction source and confidence.
+- Shows editable playlist name, defaulting to `videoTitle`.
+- Provides a public/private checkbox, defaulting to private.
+- Displays counts for auto, review, not found, and selected tracks.
+- Renders a table with extracted track details, best Spotify match, score, status icon, and a use checkbox.
+- Creates the playlist with `sdk.currentUser.profile()`, `sdk.playlists.createPlaylist()`, and `sdk.playlists.addItemsToPlaylist()` in batches of 100 URIs.
+- Navigates to Done with the playlist URL, name, added count, and tracks that were not added.
+
+Current review controls support selecting or deselecting the best match. The code stores alternate matches, but the UI does not currently expose alternate selection, query editing, or row removal.
+
+### Done
+
+Done:
+
+- Links to the created Spotify playlist.
+- Displays the number of added tracks.
+- Lists unmatched or deselected tracks so the user can add them manually.
+- Provides a Convert another action back to Home.
+
+## 8. Spotify matching
+
+`src\matching\searchSpotify.ts` processes tracks with `p-limit(5)`.
+
+For each extracted `{ artist, title, timestamp }`:
+
+1. Search Spotify with `track:"<title>" artist:"<artist>"`, limit 5.
+2. If no results are found, strip title parentheticals and retry the field-filtered query.
+3. If still empty, search plain text with `<artist> <title>`, limit 5.
+4. Score each candidate by comparing extracted artist/title to candidate artist/title:
+   - artist score weight: `0.4`
+   - title score weight: `0.6`
+5. Sort by descending score and select the highest-scored track.
+
+Status thresholds:
+
+| Score | Status | Selected by default |
+| --- | --- | --- |
+| `>= 0.85` | `auto` | Yes |
+| `>= 0.65` and `< 0.85` | `review` | Yes |
+| `< 0.65` or no candidate | `not_found` | No |
+
+If a single Spotify search task throws, that track is marked `not_found` and matching continues for the remaining tracks.
+
+## 9. Deployment
+
+`deploy-static-web-app.ps1` is the current deployment path.
+
+Required environment variable:
+
+```powershell
+$env:SWA_CLI_DEPLOYMENT_TOKEN = "<your-static-web-app-deployment-token>"
+```
+
+Default command:
+
+```powershell
+.\deploy-static-web-app.ps1
+```
+
+The script:
+
+1. Requires PowerShell 5.1 or later.
+2. Fails if `SWA_CLI_DEPLOYMENT_TOKEN` is not set.
+3. Verifies `npm` is available.
+4. Runs `npm ci` or `npm install` unless `-SkipInstall` is used.
+5. Runs `npm run build` unless `-SkipBuild` is used.
+6. Verifies the build output folder and `staticwebapp.config.json` exist.
+7. Runs `npx -y @azure/static-web-apps-cli@latest deploy dist --env production --swa-config-location . --api-location api --api-language node --api-version 20`.
+
+Use `-NoApi` to deploy only the frontend.
+
+## 10. Validation commands
+
+Existing commands:
+
+```powershell
+npm run build
+npm run lint
+npm --prefix api run build
+```
+
+Local SWA emulation:
+
+```powershell
+npm run dev:swa
+```
+
+Direct API development:
+
+```powershell
+npm --prefix api run start
+```
+
+## 11. Current acceptance criteria
+
+- A user can sign in with Spotify via browser PKCE.
+- A supported YouTube URL with a text tracklist in the description produces a structured tracklist.
+- The Review page searches Spotify, scores matches, and clearly marks auto, review, and not-found statuses.
+- The user can choose private or public visibility and deselect tracks before creation.
+- Playlist creation uses the signed-in Spotify user's account and adds tracks in batches of 100.
+- Tracks that are not added are listed on Done.
+- YouTube and Azure AI Foundry secrets remain server-side.
+- Manual deployment through `deploy-static-web-app.ps1` deploys the built SPA and API folder to Azure Static Web Apps.

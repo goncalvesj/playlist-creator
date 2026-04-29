@@ -8,7 +8,7 @@ export interface ExtractTracklistResponse {
   videoId: string;
   videoTitle: string;
   channelTitle: string;
-  source: 'description' | 'pinned_comment' | 'top_comment';
+  source: 'description';
   confidence: 'high' | 'medium' | 'low';
   tracks: ExtractedTrack[];
 }

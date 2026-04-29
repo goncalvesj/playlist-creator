@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@spotify/web-api-ts-sdk": "^1.2.0",
-    "@tanstack/react-query": "^5.100.1",
+    "@tanstack/react-query": "^5.100.5",
     "fast-fuzzy": "^1.12.0",
     "p-limit": "^7.3.0",
     "react": "^19.2.5",
@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.2.4",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -30,8 +31,9 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
+    "tailwindcss": "^4.2.4",
     "typescript": "~6.0.2",
-    "typescript-eslint": "^8.58.2",
+    "typescript-eslint": "^8.59.1",
     "vite": "^8.0.10"
   }
 }
