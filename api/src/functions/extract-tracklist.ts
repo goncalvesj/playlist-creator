@@ -14,14 +14,15 @@ const DEFAULT_MAX_CACHE_ENTRIES = 100;
 const CLEANUP_INTERVAL_MS = 60_000;
 const AI_OUTPUT_PREVIEW_CHARS = 800;
 
-
 interface RateLimitEntry {
   windowStart: number;
   count: number;
+  createdAt: number;
 }
 
 interface CachedTracklist {
   expiresAt: number;
+  cachedAt: number;
   body: unknown;
 }
 
@@ -172,7 +173,16 @@ function pruneExpiredRateLimitEntries(now: number, windowMs: number) {
 }
 
 function removeOldestRateLimitEntry() {
-  const oldestClientKey = rateLimitStore.keys().next().value as string | undefined;
+  let oldestClientKey: string | null = null;
+  let oldestCreatedAt = Number.POSITIVE_INFINITY;
+
+  for (const [clientKey, entry] of rateLimitStore) {
+    if (entry.createdAt < oldestCreatedAt) {
+      oldestCreatedAt = entry.createdAt;
+      oldestClientKey = clientKey;
+    }
+  }
+
   if (oldestClientKey) {
     rateLimitStore.delete(oldestClientKey);
   }
@@ -252,7 +262,7 @@ function checkRateLimit(
     if (entry) {
       rateLimitStore.delete(clientKey);
     }
-    rateLimitStore.set(clientKey, { windowStart: now, count: 1 });
+    rateLimitStore.set(clientKey, { windowStart: now, count: 1, createdAt: now });
     return { allowed: true };
   }
 
@@ -299,7 +309,16 @@ function setCachedTracklist(videoId: string, body: unknown) {
   }
 
   while (!tracklistCache.has(videoId) && tracklistCache.size >= maxEntries) {
-    const oldestVideoId = tracklistCache.keys().next().value as string | undefined;
+    let oldestVideoId: string | null = null;
+    let oldestCachedAt = Number.POSITIVE_INFINITY;
+
+    for (const [cachedVideoId, cached] of tracklistCache) {
+      if (cached.cachedAt < oldestCachedAt) {
+        oldestCachedAt = cached.cachedAt;
+        oldestVideoId = cachedVideoId;
+      }
+    }
+
     if (!oldestVideoId) break;
     tracklistCache.delete(oldestVideoId);
   }
@@ -309,6 +328,7 @@ function setCachedTracklist(videoId: string, body: unknown) {
   }
   tracklistCache.set(videoId, {
     expiresAt: now + ttlSeconds * 1000,
+    cachedAt: now,
     body,
   });
 }
@@ -540,7 +560,6 @@ export async function extractTracklist(
   context: InvocationContext
 ): Promise<HttpResponseInit> {
   try {
-    let body: unknown;
     const rateLimit = checkRateLimit(request);
     if (!rateLimit.allowed) {
       if ("missingClient" in rateLimit) {
@@ -557,6 +576,7 @@ export async function extractTracklist(
       );
     }
 
+    let body: unknown;
     try {
       body = await request.json();
     } catch {
