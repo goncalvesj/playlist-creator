@@ -3,10 +3,34 @@ import { AzureOpenAI } from "openai";
 import { z } from "zod";
 
 const DEFAULT_OPENAI_API_VERSION = "v1";
+const DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60;
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 5;
+const DEFAULT_CACHE_TTL_SECONDS = 60 * 60 * 6;
+const DEFAULT_MAX_SOURCE_TEXT_CHARS = 12_000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 4_000;
+
+const BASE_HEADERS = {
+  "Content-Type": "application/json",
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+};
+
+interface RateLimitEntry {
+  windowStart: number;
+  count: number;
+}
+
+interface CachedTracklist {
+  expiresAt: number;
+  body: unknown;
+}
+
+const rateLimitStore = new Map<string, RateLimitEntry>();
+const tracklistCache = new Map<string, CachedTracklist>();
 
 // --- Request validation ---
 const RequestSchema = z.object({
-  youtubeUrl: z.string().url(),
+  youtubeUrl: z.string().url().max(2048),
 });
 
 // --- LLM response validation ---
@@ -190,6 +214,86 @@ const TRACK_RESPONSE_FORMAT = {
   schema: TRACK_JSON_SCHEMA,
 };
 
+function getPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getClientKey(req: HttpRequest): string {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  if (forwardedFor) {
+    return forwardedFor.split(",")[0].trim();
+  }
+
+  return req.headers["x-client-ip"] || req.headers["client-ip"] || "unknown";
+}
+
+function checkRateLimit(req: HttpRequest): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
+  const maxRequests = getPositiveIntegerEnv(
+    "API_RATE_LIMIT_MAX_REQUESTS",
+    DEFAULT_RATE_LIMIT_MAX_REQUESTS
+  );
+  const windowSeconds = getPositiveIntegerEnv(
+    "API_RATE_LIMIT_WINDOW_SECONDS",
+    DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+  );
+  const windowMs = windowSeconds * 1000;
+  const now = Date.now();
+  const clientKey = getClientKey(req);
+  const entry = rateLimitStore.get(clientKey);
+
+  if (!entry || now - entry.windowStart >= windowMs) {
+    rateLimitStore.set(clientKey, { windowStart: now, count: 1 });
+    return { allowed: true };
+  }
+
+  if (entry.count >= maxRequests) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((entry.windowStart + windowMs - now) / 1000)),
+    };
+  }
+
+  entry.count += 1;
+  return { allowed: true };
+}
+
+function trimSourceText(text: string): string {
+  const maxChars = getPositiveIntegerEnv("MAX_SOURCE_TEXT_CHARS", DEFAULT_MAX_SOURCE_TEXT_CHARS);
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+function getCachedTracklist(videoId: string): unknown | null {
+  const cached = tracklistCache.get(videoId);
+  if (!cached) return null;
+
+  if (cached.expiresAt <= Date.now()) {
+    tracklistCache.delete(videoId);
+    return null;
+  }
+
+  return cached.body;
+}
+
+function setCachedTracklist(videoId: string, body: unknown) {
+  const ttlSeconds = getPositiveIntegerEnv("TRACKLIST_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_SECONDS);
+  tracklistCache.set(videoId, {
+    expiresAt: Date.now() + ttlSeconds * 1000,
+    body,
+  });
+}
+
+function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}) {
+  return {
+    status,
+    headers: { ...BASE_HEADERS, ...headers },
+    body,
+  };
+}
+
 function normalizeOpenAIBaseUrl(targetUri: string): string {
   const trimmed = targetUri.trim().replace(/\/+$/, "");
   const withoutResponses = trimmed.endsWith("/responses")
@@ -226,13 +330,22 @@ const httpTrigger: AzureFunction = async function (
   req: HttpRequest
 ): Promise<void> {
   try {
+    const rateLimit = checkRateLimit(req);
+    if (!rateLimit.allowed) {
+      context.res = jsonResponse(
+        429,
+        {
+          error: "Too many requests. Please wait before trying again.",
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        { "Retry-After": rateLimit.retryAfterSeconds.toString() }
+      );
+      return;
+    }
+
     const parseResult = RequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      context.res = {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "Invalid request. Provide a valid youtubeUrl." },
-      };
+      context.res = jsonResponse(400, { error: "Invalid request. Provide a valid youtubeUrl." });
       return;
     }
 
@@ -240,32 +353,26 @@ const httpTrigger: AzureFunction = async function (
 
     const videoId = extractVideoId(youtubeUrl);
     if (!videoId) {
-      context.res = {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "Could not extract video ID from URL." },
-      };
+      context.res = jsonResponse(400, { error: "Could not extract video ID from URL." });
+      return;
+    }
+
+    const cachedBody = getCachedTracklist(videoId);
+    if (cachedBody) {
+      context.res = jsonResponse(200, cachedBody);
       return;
     }
 
     const apiKey = process.env.YOUTUBE_API_KEY;
     if (!apiKey) {
-      context.res = {
-        status: 502,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "YouTube API key not configured." },
-      };
+      context.res = jsonResponse(502, { error: "YouTube API key not configured." });
       return;
     }
 
     // Fetch video metadata
     const metadata = await fetchVideoMetadata(videoId, apiKey);
     if (!metadata) {
-      context.res = {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "Video not found." },
-      };
+      context.res = jsonResponse(404, { error: "Video not found." });
       return;
     }
 
@@ -275,21 +382,15 @@ const httpTrigger: AzureFunction = async function (
     // Pick source text
     const sourceResult = pickSourceText(metadata.description, comments, metadata.channelId);
     if (!sourceResult) {
-      context.res = {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "No tracklist found in video description or comments." },
-      };
+      context.res = jsonResponse(404, {
+        error: "No tracklist found in video description or comments.",
+      });
       return;
     }
 
     const foundryConfig = getFoundryConfig();
     if (!foundryConfig.baseUrl || !foundryConfig.apiKey || !foundryConfig.model) {
-      context.res = {
-        status: 502,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "Azure AI Foundry configuration is incomplete." },
-      };
+      context.res = jsonResponse(502, { error: "Azure AI Foundry configuration is incomplete." });
       return;
     }
 
@@ -303,18 +404,15 @@ const httpTrigger: AzureFunction = async function (
     const completion = await openaiClient.responses.create({
       model: foundryConfig.model,
       instructions: SYSTEM_PROMPT,
-      input: `SOURCE: ${sourceResult.source}\n\n${sourceResult.text}`,
+      input: `SOURCE: ${sourceResult.source}\n\n${trimSourceText(sourceResult.text)}`,
       text: { format: TRACK_RESPONSE_FORMAT },
       temperature: 0,
+      max_output_tokens: getPositiveIntegerEnv("AZURE_OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
     });
 
     const rawContent = completion.output_text;
     if (!rawContent) {
-      context.res = {
-        status: 502,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "No response from AI model." },
-      };
+      context.res = jsonResponse(502, { error: "No response from AI model." });
       return;
     }
 
@@ -323,33 +421,25 @@ const httpTrigger: AzureFunction = async function (
     const validated = LLMResponseSchema.safeParse(parsed);
 
     if (!validated.success || validated.data.tracks.length === 0) {
-      context.res = {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-        body: { error: "No tracklist could be extracted from the video." },
-      };
+      context.res = jsonResponse(404, {
+        error: "No tracklist could be extracted from the video.",
+      });
       return;
     }
 
-    context.res = {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-      body: {
-        videoId,
-        videoTitle: metadata.title,
-        channelTitle: metadata.channelTitle,
-        source: sourceResult.source,
-        confidence: validated.data.confidence,
-        tracks: validated.data.tracks,
-      },
+    const responseBody = {
+      videoId,
+      videoTitle: metadata.title,
+      channelTitle: metadata.channelTitle,
+      source: sourceResult.source,
+      confidence: validated.data.confidence,
+      tracks: validated.data.tracks,
     };
+    setCachedTracklist(videoId, responseBody);
+    context.res = jsonResponse(200, responseBody);
   } catch (error) {
     context.log.error("extract-tracklist error:", error);
-    context.res = {
-      status: 502,
-      headers: { "Content-Type": "application/json" },
-      body: { error: "An upstream service error occurred." },
-    };
+    context.res = jsonResponse(502, { error: "An upstream service error occurred." });
   }
 };
 
