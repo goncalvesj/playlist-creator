@@ -193,7 +193,7 @@ function removeOldestRateLimitEntry() {
 }
 
 function normalizeClientIp(candidate: string): string | null {
-  const trimmed = candidate.trim().replace(/^"|"$/, "");
+  const trimmed = candidate.trim().replace(/^"(.*)"$/, "$1");
   const bracketedIpv6 = trimmed.match(/^\[([^\]]+)\](?::\d+)?$/);
   if (bracketedIpv6?.[1] && isIP(bracketedIpv6[1])) {
     return bracketedIpv6[1];
