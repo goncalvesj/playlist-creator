@@ -23,7 +23,7 @@ The `/api/extract-tracklist` function includes lightweight in-memory safeguards 
 - `MAX_SOURCE_TEXT_CHARS` caps the description/comment text sent to the model. Defaults to 12000 characters.
 - `AZURE_OPENAI_MAX_OUTPUT_TOKENS` caps model output tokens. Defaults to 4000.
 
-Configure these in `api/local.settings.json` for local development and in Azure Static Web Apps application settings for production. Rate limiting uses the Static Web Apps authenticated principal header when present, otherwise the forwarded client IP header. Requests without an identifiable client are rejected so one unidentified caller cannot exhaust a shared bucket. The in-memory rate limit and cache are per running function instance, so use provider-level quotas/budgets as an additional backstop for personal API keys.
+Configure these in `api/local.settings.json` for local development and in Azure Static Web Apps application settings for production. Rate limiting uses the forwarded client IP header. Requests without an identifiable client are rejected so one unidentified caller cannot exhaust a shared bucket. The in-memory rate limit and cache are per running function instance, so use provider-level quotas/budgets as an additional backstop for personal API keys.
 
 ## Manual Azure Static Web Apps deployment
 

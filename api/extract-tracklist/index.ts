@@ -225,41 +225,62 @@ function getPositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function pruneRateLimitStore(now: number, windowMs: number) {
-  const maxClients = getPositiveIntegerEnv(
-    "API_RATE_LIMIT_MAX_CLIENTS",
-    DEFAULT_MAX_RATE_LIMIT_CLIENTS
-  );
-
+function pruneExpiredRateLimitEntries(now: number, windowMs: number) {
   for (const [clientKey, entry] of rateLimitStore) {
-    if (now - entry.windowStart >= windowMs || rateLimitStore.size > maxClients) {
+    if (now - entry.windowStart >= windowMs) {
       rateLimitStore.delete(clientKey);
     }
+  }
+}
+
+function removeOldestRateLimitEntry() {
+  let oldestClientKey: string | null = null;
+  let oldestWindowStart = Number.POSITIVE_INFINITY;
+
+  for (const [clientKey, entry] of rateLimitStore) {
+    if (entry.windowStart < oldestWindowStart) {
+      oldestWindowStart = entry.windowStart;
+      oldestClientKey = clientKey;
+    }
+  }
+
+  if (oldestClientKey) {
+    rateLimitStore.delete(oldestClientKey);
   }
 }
 
 function normalizeClientIp(candidate: string): string | null {
   const trimmed = candidate.trim().replace(/^"|"$/g, "");
   const bracketedIpv6 = trimmed.match(/^\[([^\]]+)\](?::\d+)?$/);
-  const ipv4WithPort = trimmed.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/);
-  const ip = bracketedIpv6?.[1] ?? ipv4WithPort?.[1] ?? trimmed;
+  if (bracketedIpv6?.[1] && isIP(bracketedIpv6[1])) {
+    return bracketedIpv6[1];
+  }
 
-  return isIP(ip) ? ip : null;
+  if (isIP(trimmed)) {
+    return trimmed;
+  }
+
+  const lastColonIndex = trimmed.lastIndexOf(":");
+  const hasSingleColon = lastColonIndex > -1 && trimmed.indexOf(":") === lastColonIndex;
+  if (hasSingleColon) {
+    const possibleIp = trimmed.slice(0, lastColonIndex);
+    const possiblePort = trimmed.slice(lastColonIndex + 1);
+    if (/^\d+$/.test(possiblePort) && isIP(possibleIp)) {
+      return possibleIp;
+    }
+  }
+
+  return null;
 }
 
 function getClientKey(req: HttpRequest): string | null {
-  const principalId = req.headers["x-ms-client-principal-id"];
-  if (principalId) {
-    return `principal:${principalId}`;
-  }
-
   const forwardedFor = req.headers["x-forwarded-for"];
   if (forwardedFor) {
     const forwardedIps = forwardedFor
       .split(",")
       .map(normalizeClientIp)
       .filter((ip): ip is string => ip !== null);
-    return forwardedIps.length > 0 ? forwardedIps[forwardedIps.length - 1] : null;
+    return forwardedIps[0] ?? null;
   }
 
   return null;
@@ -278,15 +299,23 @@ function checkRateLimit(
   );
   const windowMs = windowSeconds * 1000;
   const now = Date.now();
+  const maxClients = getPositiveIntegerEnv(
+    "API_RATE_LIMIT_MAX_CLIENTS",
+    DEFAULT_MAX_RATE_LIMIT_CLIENTS
+  );
   const clientKey = getClientKey(req);
   if (!clientKey) {
     return { allowed: false, missingClient: true };
   }
 
-  pruneRateLimitStore(now, windowMs);
+  pruneExpiredRateLimitEntries(now, windowMs);
   const entry = rateLimitStore.get(clientKey);
 
   if (!entry || now - entry.windowStart >= windowMs) {
+    if (!entry && rateLimitStore.size >= maxClients) {
+      removeOldestRateLimitEntry();
+    }
+
     rateLimitStore.set(clientKey, { windowStart: now, count: 1 });
     return { allowed: true };
   }
@@ -322,14 +351,31 @@ function getCachedTracklist(videoId: string): unknown | null {
 function setCachedTracklist(videoId: string, body: unknown) {
   const ttlSeconds = getPositiveIntegerEnv("TRACKLIST_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_SECONDS);
   const maxEntries = getPositiveIntegerEnv("TRACKLIST_CACHE_MAX_ENTRIES", DEFAULT_MAX_CACHE_ENTRIES);
+  const now = Date.now();
+
   for (const [cachedVideoId, cached] of tracklistCache) {
-    if (cached.expiresAt <= Date.now() || tracklistCache.size >= maxEntries) {
+    if (cached.expiresAt <= now) {
       tracklistCache.delete(cachedVideoId);
     }
   }
 
+  while (!tracklistCache.has(videoId) && tracklistCache.size >= maxEntries) {
+    let oldestVideoId: string | null = null;
+    let oldestExpiresAt = Number.POSITIVE_INFINITY;
+
+    for (const [cachedVideoId, cached] of tracklistCache) {
+      if (cached.expiresAt < oldestExpiresAt) {
+        oldestExpiresAt = cached.expiresAt;
+        oldestVideoId = cachedVideoId;
+      }
+    }
+
+    if (!oldestVideoId) break;
+    tracklistCache.delete(oldestVideoId);
+  }
+
   tracklistCache.set(videoId, {
-    expiresAt: Date.now() + ttlSeconds * 1000,
+    expiresAt: now + ttlSeconds * 1000,
     body,
   });
 }
