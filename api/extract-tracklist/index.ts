@@ -11,6 +11,7 @@ const DEFAULT_MAX_SOURCE_TEXT_CHARS = 12_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 4_000;
 const DEFAULT_MAX_RATE_LIMIT_CLIENTS = 1_000;
 const DEFAULT_MAX_CACHE_ENTRIES = 100;
+const CLEANUP_INTERVAL_MS = 60_000;
 
 const BASE_HEADERS = {
   "Content-Type": "application/json",
@@ -30,6 +31,8 @@ interface CachedTracklist {
 
 const rateLimitStore = new Map<string, RateLimitEntry>();
 const tracklistCache = new Map<string, CachedTracklist>();
+let lastRateLimitPruneAt = 0;
+let lastTracklistCachePruneAt = 0;
 
 // --- Request validation ---
 const RequestSchema = z.object({
@@ -234,16 +237,7 @@ function pruneExpiredRateLimitEntries(now: number, windowMs: number) {
 }
 
 function removeOldestRateLimitEntry() {
-  let oldestClientKey: string | null = null;
-  let oldestWindowStart = Number.POSITIVE_INFINITY;
-
-  for (const [clientKey, entry] of rateLimitStore) {
-    if (entry.windowStart < oldestWindowStart) {
-      oldestWindowStart = entry.windowStart;
-      oldestClientKey = clientKey;
-    }
-  }
-
+  const oldestClientKey = rateLimitStore.keys().next().value as string | undefined;
   if (oldestClientKey) {
     rateLimitStore.delete(oldestClientKey);
   }
@@ -308,7 +302,11 @@ function checkRateLimit(
     return { allowed: false, missingClient: true };
   }
 
-  pruneExpiredRateLimitEntries(now, windowMs);
+  if (now - lastRateLimitPruneAt >= CLEANUP_INTERVAL_MS) {
+    pruneExpiredRateLimitEntries(now, windowMs);
+    lastRateLimitPruneAt = now;
+  }
+
   const entry = rateLimitStore.get(clientKey);
 
   if (!entry || now - entry.windowStart >= windowMs) {
@@ -316,6 +314,9 @@ function checkRateLimit(
       removeOldestRateLimitEntry();
     }
 
+    if (entry) {
+      rateLimitStore.delete(clientKey);
+    }
     rateLimitStore.set(clientKey, { windowStart: now, count: 1 });
     return { allowed: true };
   }
@@ -353,27 +354,24 @@ function setCachedTracklist(videoId: string, body: unknown) {
   const maxEntries = getPositiveIntegerEnv("TRACKLIST_CACHE_MAX_ENTRIES", DEFAULT_MAX_CACHE_ENTRIES);
   const now = Date.now();
 
-  for (const [cachedVideoId, cached] of tracklistCache) {
-    if (cached.expiresAt <= now) {
-      tracklistCache.delete(cachedVideoId);
+  if (now - lastTracklistCachePruneAt >= CLEANUP_INTERVAL_MS) {
+    for (const [cachedVideoId, cached] of tracklistCache) {
+      if (cached.expiresAt <= now) {
+        tracklistCache.delete(cachedVideoId);
+      }
     }
+    lastTracklistCachePruneAt = now;
   }
 
   while (!tracklistCache.has(videoId) && tracklistCache.size >= maxEntries) {
-    let oldestVideoId: string | null = null;
-    let oldestExpiresAt = Number.POSITIVE_INFINITY;
-
-    for (const [cachedVideoId, cached] of tracklistCache) {
-      if (cached.expiresAt < oldestExpiresAt) {
-        oldestExpiresAt = cached.expiresAt;
-        oldestVideoId = cachedVideoId;
-      }
-    }
-
+    const oldestVideoId = tracklistCache.keys().next().value as string | undefined;
     if (!oldestVideoId) break;
     tracklistCache.delete(oldestVideoId);
   }
 
+  if (tracklistCache.has(videoId)) {
+    tracklistCache.delete(videoId);
+  }
   tracklistCache.set(videoId, {
     expiresAt: now + ttlSeconds * 1000,
     body,
