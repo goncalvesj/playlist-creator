@@ -12,6 +12,17 @@ npm run dev:swa
 
 Open `http://127.0.0.1:5173`. The script starts the Static Web Apps emulator on the Spotify redirect origin, runs Vite behind it on port `5174`, and proxies the local API through the Functions port.
 
+## API protection settings
+
+The `/api/extract-tracklist` function includes lightweight in-memory safeguards to reduce accidental key usage and LLM spend:
+
+- `API_RATE_LIMIT_MAX_REQUESTS` and `API_RATE_LIMIT_WINDOW_SECONDS` limit requests per client before YouTube or Azure OpenAI are called. Defaults to 5 requests per 60 seconds.
+- `TRACKLIST_CACHE_TTL_SECONDS` caches successful extractions by YouTube video ID. Defaults to 6 hours.
+- `MAX_SOURCE_TEXT_CHARS` caps the description/comment text sent to the model. Defaults to 12000 characters.
+- `AZURE_OPENAI_MAX_OUTPUT_TOKENS` caps model output tokens. Defaults to 4000.
+
+Configure these in `api/local.settings.json` for local development and in Azure Static Web Apps application settings for production. The in-memory rate limit and cache are per running function instance, so use provider-level quotas/budgets as an additional backstop for personal API keys.
+
 ## Manual Azure Static Web Apps deployment
 
 Set the deployment token for the current PowerShell session, then run the deployment script:
