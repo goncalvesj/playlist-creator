@@ -1,4 +1,5 @@
 import { AzureFunction, Context, HttpRequest } from "@azure/functions";
+import { isIP } from "net";
 import { AzureOpenAI } from "openai";
 import { z } from "zod";
 
@@ -8,6 +9,8 @@ const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 5;
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60 * 6;
 const DEFAULT_MAX_SOURCE_TEXT_CHARS = 12_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 4_000;
+const DEFAULT_MAX_RATE_LIMIT_CLIENTS = 1_000;
+const DEFAULT_MAX_CACHE_ENTRIES = 100;
 
 const BASE_HEADERS = {
   "Content-Type": "application/json",
@@ -222,16 +225,49 @@ function getPositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function getClientKey(req: HttpRequest): string {
-  const forwardedFor = req.headers["x-forwarded-for"];
-  if (forwardedFor) {
-    return forwardedFor.split(",")[0].trim();
-  }
+function pruneRateLimitStore(now: number, windowMs: number) {
+  const maxClients = getPositiveIntegerEnv(
+    "API_RATE_LIMIT_MAX_CLIENTS",
+    DEFAULT_MAX_RATE_LIMIT_CLIENTS
+  );
 
-  return req.headers["x-client-ip"] || req.headers["client-ip"] || "unknown";
+  for (const [clientKey, entry] of rateLimitStore) {
+    if (now - entry.windowStart >= windowMs || rateLimitStore.size > maxClients) {
+      rateLimitStore.delete(clientKey);
+    }
+  }
 }
 
-function checkRateLimit(req: HttpRequest): { allowed: true } | { allowed: false; retryAfterSeconds: number } {
+function normalizeClientIp(candidate: string): string | null {
+  const trimmed = candidate.trim().replace(/^"|"$/g, "");
+  const bracketedIpv6 = trimmed.match(/^\[([^\]]+)\](?::\d+)?$/);
+  const ipv4WithPort = trimmed.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/);
+  const ip = bracketedIpv6?.[1] ?? ipv4WithPort?.[1] ?? trimmed;
+
+  return isIP(ip) ? ip : null;
+}
+
+function getClientKey(req: HttpRequest): string | null {
+  const principalId = req.headers["x-ms-client-principal-id"];
+  if (principalId) {
+    return `principal:${principalId}`;
+  }
+
+  const forwardedFor = req.headers["x-forwarded-for"];
+  if (forwardedFor) {
+    const forwardedIps = forwardedFor
+      .split(",")
+      .map(normalizeClientIp)
+      .filter((ip): ip is string => ip !== null);
+    return forwardedIps.length > 0 ? forwardedIps[forwardedIps.length - 1] : null;
+  }
+
+  return null;
+}
+
+function checkRateLimit(
+  req: HttpRequest
+): { allowed: true } | { allowed: false; retryAfterSeconds: number } | { allowed: false; missingClient: true } {
   const maxRequests = getPositiveIntegerEnv(
     "API_RATE_LIMIT_MAX_REQUESTS",
     DEFAULT_RATE_LIMIT_MAX_REQUESTS
@@ -243,6 +279,11 @@ function checkRateLimit(req: HttpRequest): { allowed: true } | { allowed: false;
   const windowMs = windowSeconds * 1000;
   const now = Date.now();
   const clientKey = getClientKey(req);
+  if (!clientKey) {
+    return { allowed: false, missingClient: true };
+  }
+
+  pruneRateLimitStore(now, windowMs);
   const entry = rateLimitStore.get(clientKey);
 
   if (!entry || now - entry.windowStart >= windowMs) {
@@ -280,6 +321,13 @@ function getCachedTracklist(videoId: string): unknown | null {
 
 function setCachedTracklist(videoId: string, body: unknown) {
   const ttlSeconds = getPositiveIntegerEnv("TRACKLIST_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_SECONDS);
+  const maxEntries = getPositiveIntegerEnv("TRACKLIST_CACHE_MAX_ENTRIES", DEFAULT_MAX_CACHE_ENTRIES);
+  for (const [cachedVideoId, cached] of tracklistCache) {
+    if (cached.expiresAt <= Date.now() || tracklistCache.size >= maxEntries) {
+      tracklistCache.delete(cachedVideoId);
+    }
+  }
+
   tracklistCache.set(videoId, {
     expiresAt: Date.now() + ttlSeconds * 1000,
     body,
@@ -332,6 +380,13 @@ const httpTrigger: AzureFunction = async function (
   try {
     const rateLimit = checkRateLimit(req);
     if (!rateLimit.allowed) {
+      if ("missingClient" in rateLimit) {
+        context.res = jsonResponse(400, {
+          error: "Could not identify the client for rate limiting.",
+        });
+        return;
+      }
+
       context.res = jsonResponse(
         429,
         {
