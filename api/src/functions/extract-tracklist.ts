@@ -26,6 +26,11 @@ interface CachedTracklist {
   body: unknown;
 }
 
+type RateLimitResult =
+  | { allowed: true }
+  | { allowed: false; reason: "rate-limited"; retryAfterSeconds: number }
+  | { allowed: false; reason: "missing-client" };
+
 const rateLimitStore = new Map<string, RateLimitEntry>();
 const tracklistCache = new Map<string, CachedTracklist>();
 let lastRateLimitPruneAt = 0;
@@ -155,7 +160,6 @@ const TRACK_RESPONSE_FORMAT = {
   schema: TRACK_JSON_SCHEMA,
 };
 
-
 function getPositiveIntegerEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -189,7 +193,7 @@ function removeOldestRateLimitEntry() {
 }
 
 function normalizeClientIp(candidate: string): string | null {
-  const trimmed = candidate.trim().replace(/^"|"$/g, "");
+  const trimmed = candidate.trim().replace(/^"|"$/, "");
   const bracketedIpv6 = trimmed.match(/^\[([^\]]+)\](?::\d+)?$/);
   if (bracketedIpv6?.[1] && isIP(bracketedIpv6[1])) {
     return bracketedIpv6[1];
@@ -225,9 +229,7 @@ function getClientKey(request: HttpRequest): string | null {
   return null;
 }
 
-function checkRateLimit(
-  request: HttpRequest
-): { allowed: true } | { allowed: false; retryAfterSeconds: number } | { allowed: false; missingClient: true } {
+function checkRateLimit(request: HttpRequest): RateLimitResult {
   const maxRequests = getPositiveIntegerEnv(
     "API_RATE_LIMIT_MAX_REQUESTS",
     DEFAULT_RATE_LIMIT_MAX_REQUESTS
@@ -244,7 +246,7 @@ function checkRateLimit(
   );
   const clientKey = getClientKey(request);
   if (!clientKey) {
-    return { allowed: false, missingClient: true };
+    return { allowed: false, reason: "missing-client" };
   }
 
   if (now - lastRateLimitPruneAt >= CLEANUP_INTERVAL_MS) {
@@ -269,6 +271,7 @@ function checkRateLimit(
   if (entry.count >= maxRequests) {
     return {
       allowed: false,
+      reason: "rate-limited",
       retryAfterSeconds: Math.max(1, Math.ceil((entry.windowStart + windowMs - now) / 1000)),
     };
   }
@@ -308,7 +311,7 @@ function setCachedTracklist(videoId: string, body: unknown) {
     lastTracklistCachePruneAt = now;
   }
 
-  while (!tracklistCache.has(videoId) && tracklistCache.size >= maxEntries) {
+  if (!tracklistCache.has(videoId) && tracklistCache.size >= maxEntries) {
     let oldestVideoId: string | null = null;
     let oldestCachedAt = Number.POSITIVE_INFINITY;
 
@@ -319,8 +322,9 @@ function setCachedTracklist(videoId: string, body: unknown) {
       }
     }
 
-    if (!oldestVideoId) break;
-    tracklistCache.delete(oldestVideoId);
+    if (oldestVideoId) {
+      tracklistCache.delete(oldestVideoId);
+    }
   }
 
   if (tracklistCache.has(videoId)) {
@@ -562,7 +566,7 @@ export async function extractTracklist(
   try {
     const rateLimit = checkRateLimit(request);
     if (!rateLimit.allowed) {
-      if ("missingClient" in rateLimit) {
+      if (rateLimit.reason === "missing-client") {
         return jsonResponse(400, { error: "Could not identify the client for rate limiting." });
       }
 
