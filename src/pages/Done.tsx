@@ -1,5 +1,7 @@
+import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { type MatchedTrack } from '../matching/searchSpotify';
+import { trackEvent } from '../telemetry/appInsights';
 
 export default function Done() {
   const location = useLocation();
@@ -10,6 +12,20 @@ export default function Done() {
     addedCount: number;
     unmatchedTracks: MatchedTrack[];
   };
+  const unmatchedTrackCount = state.unmatchedTracks?.length ?? 0;
+
+  useEffect(() => {
+    if (!state.playlistUrl) return;
+
+    trackEvent(
+      'playlist_result_viewed',
+      { operation: 'spotify_playlist_creation' },
+      {
+        addedTrackCount: state.addedCount,
+        unmatchedTrackCount,
+      }
+    );
+  }, [state.addedCount, state.playlistUrl, unmatchedTrackCount]);
 
   if (!state.playlistUrl) {
     navigate('/');

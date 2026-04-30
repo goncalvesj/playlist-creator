@@ -12,6 +12,7 @@
   "main": "dist/src/{index.js,functions/*.js}",
   "dependencies": {
     "@azure/functions": "^4.14.0",
+    "applicationinsights": "^2.9.8",
     "openai": "^6.35.0",
     "zod": "^4.3.6"
   }

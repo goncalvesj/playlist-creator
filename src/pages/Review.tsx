@@ -4,6 +4,12 @@ import { SpotifyApi } from '@spotify/web-api-ts-sdk';
 import { matchAllTracks, type MatchedTrack } from '../matching/searchSpotify';
 import { type ExtractTracklistResponse } from '../api/extractTracklist';
 import TrackRow from '../components/TrackRow';
+import {
+  getErrorCategory,
+  trackAsyncDependency,
+  trackEvent,
+  trackException,
+} from '../telemetry/appInsights';
 
 interface ReviewProps {
   sdk: SpotifyApi;
@@ -29,10 +35,16 @@ export default function Review({ sdk }: ReviewProps) {
     if (!tracklistData) return;
     matchAllTracks(sdk, tracklistData.tracks, (completed, total) => {
       setMatchProgress({ completed, total });
-    }).then((matched) => {
-      setTracks(matched);
-      setIsMatching(false);
-    });
+    })
+      .then((matched) => {
+        setTracks(matched);
+        setIsMatching(false);
+      })
+      .catch((err: unknown) => {
+        trackException(err, { operation: 'spotify_track_matching' });
+        setError('Failed to match tracks on Spotify');
+        setIsMatching(false);
+      });
   }, [sdk, tracklistData]);
 
   const toggleTrack = useCallback((index: number) => {
@@ -44,25 +56,83 @@ export default function Review({ sdk }: ReviewProps) {
   const createPlaylist = async () => {
     setIsCreating(true);
     setError(null);
+    const uris = tracks
+      .filter((t) => t.selected && t.spotifyTrack)
+      .map((t) => t.spotifyTrack!.uri);
+    const unmatchedTracks = tracks.filter((t) => !t.selected || !t.spotifyTrack);
+    trackEvent(
+      'playlist_creation_started',
+      {
+        isPublic: String(isPublic),
+        operation: 'spotify_playlist_creation',
+      },
+      {
+        selectedTrackCount: uris.length,
+        unmatchedTrackCount: unmatchedTracks.length,
+      }
+    );
+
     try {
-      const profile = await sdk.currentUser.profile();
+      const profile = await trackAsyncDependency(
+        {
+          name: 'Spotify current user profile',
+          target: 'api.spotify.com',
+          type: 'Spotify',
+          data: 'GET /v1/me',
+          properties: { operation: 'spotify_playlist_creation' },
+        },
+        () => sdk.currentUser.profile()
+      );
 
-      const playlist = await sdk.playlists.createPlaylist(profile.id, {
-        name: playlistName,
-        public: isPublic,
-        description: `Source: ${youtubeUrl}`,
-      });
-
-      const uris = tracks
-        .filter((t) => t.selected && t.spotifyTrack)
-        .map((t) => t.spotifyTrack!.uri);
+      const playlist = await trackAsyncDependency(
+        {
+          name: 'Spotify create playlist',
+          target: 'api.spotify.com',
+          type: 'Spotify',
+          data: 'POST /v1/users/{user_id}/playlists',
+          properties: {
+            isPublic: String(isPublic),
+            operation: 'spotify_playlist_creation',
+          },
+        },
+        () =>
+          sdk.playlists.createPlaylist(profile.id, {
+            name: playlistName,
+            public: isPublic,
+            description: `Source: ${youtubeUrl}`,
+          })
+      );
 
       // Add tracks in batches of 100
       for (let i = 0; i < uris.length; i += 100) {
-        await sdk.playlists.addItemsToPlaylist(playlist.id, uris.slice(i, i + 100));
+        const batch = uris.slice(i, i + 100);
+        await trackAsyncDependency(
+          {
+            name: 'Spotify add playlist items',
+            target: 'api.spotify.com',
+            type: 'Spotify',
+            data: 'POST /v1/playlists/{playlist_id}/tracks',
+            properties: {
+              batchIndex: String(i / 100 + 1),
+              operation: 'spotify_playlist_creation',
+            },
+            measurements: { batchSize: batch.length },
+          },
+          () => sdk.playlists.addItemsToPlaylist(playlist.id, batch)
+        );
       }
 
-      const unmatchedTracks = tracks.filter((t) => !t.selected || !t.spotifyTrack);
+      trackEvent(
+        'playlist_creation_completed',
+        {
+          isPublic: String(isPublic),
+          operation: 'spotify_playlist_creation',
+        },
+        {
+          addedTrackCount: uris.length,
+          unmatchedTrackCount: unmatchedTracks.length,
+        }
+      );
       navigate('/done', {
         state: {
           playlistUrl: playlist.external_urls.spotify,
@@ -72,6 +142,19 @@ export default function Review({ sdk }: ReviewProps) {
         },
       });
     } catch (err) {
+      trackEvent(
+        'playlist_creation_failed',
+        {
+          errorCategory: getErrorCategory(err),
+          isPublic: String(isPublic),
+          operation: 'spotify_playlist_creation',
+        },
+        {
+          selectedTrackCount: uris.length,
+          unmatchedTrackCount: unmatchedTracks.length,
+        }
+      );
+      trackException(err, { operation: 'spotify_playlist_creation' });
       setError(err instanceof Error ? err.message : 'Failed to create playlist');
     } finally {
       setIsCreating(false);

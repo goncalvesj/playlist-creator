@@ -42,6 +42,11 @@ Frontend (`.env`, copied from `.env.example`):
 ```text
 VITE_SPOTIFY_CLIENT_ID=<spotify-client-id>
 VITE_SPOTIFY_REDIRECT_URI=http://127.0.0.1:5173/callback
+VITE_APPLICATIONINSIGHTS_CONNECTION_STRING=<app-insights-connection-string>
+VITE_APPINSIGHTS_CLOUD_ROLE_NAME=playlist-creator-web
+VITE_APP_ENVIRONMENT=development
+VITE_APP_VERSION=local
+VITE_BUILD_SHA=local
 ```
 
 Backend (`api\local.settings.json` locally, Static Web Apps application settings in production):
@@ -51,11 +56,17 @@ YOUTUBE_API_KEY=<youtube-data-api-key>
 AZURE_OPENAI_ENDPOINT=<foundry-openai-v1-base-url>
 AZURE_OPENAI_API_KEY=<foundry-api-key>
 AZURE_OPENAI_DEPLOYMENT=<model-deployment-name>
+APPLICATIONINSIGHTS_CONNECTION_STRING=<app-insights-connection-string>
+APPLICATIONINSIGHTS_CLOUD_ROLE_NAME=playlist-creator-api
+APPLICATION_ENVIRONMENT=development
+APP_VERSION=local
 ```
 
 `AZURE_OPENAI_ENDPOINT` should be the Foundry OpenAI v1 base URL, for example `https://<your-foundry-host>/openai/v1`. The SDK appends `/responses` for requests.
 
 The function also supports optional knobs for rate limiting, caching, and model output limits — see `api\src\rateLimit.ts`, `api\src\tracklistCache.ts`, and `api\src\env.ts` for the full list.
+
+Application Insights telemetry is optional locally and activates only when the connection string is configured. The app emits privacy-safe diagnostics for SPA routes, browser vitals, frontend exceptions, `/api/extract-tracklist` correlation, YouTube and Azure AI dependencies, Spotify matching and playlist creation, cache hits, rate limits, and sanitized failure categories. Telemetry uses dimensions such as `cloudRoleName`, `environment`, `appVersion`, `buildSha`, `operation`, `resultCategory`, `correlationId`, and hashed `videoIdHash`; it intentionally avoids logging playlist names, YouTube URLs, Spotify tokens, user emails, and raw provider responses.
 
 ## Local development
 

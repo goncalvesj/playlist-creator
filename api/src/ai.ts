@@ -2,6 +2,7 @@ import type { InvocationContext } from "@azure/functions";
 import OpenAI from "openai";
 import { z } from "zod";
 import { getPositiveIntegerEnv } from "./env";
+import { getErrorCategory, getErrorStatusCode, hashIdentifier, trackDependency, trackEvent } from "./telemetry";
 import { getSourceDiagnostics, type DescriptionSourceText } from "./youtube";
 
 const DEFAULT_MAX_SOURCE_TEXT_CHARS = 12_000;
@@ -84,26 +85,41 @@ export type ExtractTracksResult =
       tracks: Array<{ artist: string; title: string; timestamp: string | null }>;
     }
   | { kind: "no-tracks" }
+  | { kind: "unprocessable"; error: string }
   | { kind: "upstream-error"; error: string };
 
-function getResponseStatusError(completion: AIResponseStatus): string | null {
+function getResponseStatusError(
+  completion: AIResponseStatus
+): { kind: "unprocessable" | "upstream-error"; error: string } | null {
   if (completion.status === "completed" || !completion.status) {
     return null;
   }
 
   if (completion.status === "incomplete") {
     if (completion.incomplete_details?.reason === "max_output_tokens") {
-      return "AI response was too long to process. Try a shorter video or tracklist.";
+      return {
+        kind: "unprocessable",
+        error: "This video's description is too long to process. Try a different video.",
+      };
     }
 
     if (completion.incomplete_details?.reason === "content_filter") {
-      return "AI model output was stopped by Azure content filtering.";
+      return {
+        kind: "unprocessable",
+        error: "We couldn't generate a tracklist for this video. Please try a different one.",
+      };
     }
 
-    return "AI model returned an incomplete response.";
+    return {
+      kind: "unprocessable",
+      error: "We couldn't generate a tracklist for this video. Please try a different one.",
+    };
   }
 
-  return "AI model did not complete the request.";
+  return {
+    kind: "upstream-error",
+    error: "We couldn't generate a tracklist for this video. Please try a different one.",
+  };
 }
 
 function textPreview(text: string, maxLength = AI_OUTPUT_PREVIEW_CHARS): string {
@@ -253,13 +269,20 @@ export async function extractTracks(
   const baseURL = process.env.AZURE_OPENAI_ENDPOINT;
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
   const model = process.env.AZURE_OPENAI_DEPLOYMENT;
+  const videoIdHash = hashIdentifier(videoId);
 
   if (!baseURL || !apiKey || !model) {
-    return { kind: "upstream-error", error: "Azure AI Foundry configuration is incomplete." };
+    trackEvent("ai_configuration_missing", {
+      operation: "extract_tracklist",
+      resultCategory: "configuration_error",
+      videoIdHash,
+    });
+    return { kind: "upstream-error", error: "The service is temporarily unavailable. Please try again later." };
   }
 
+  const normalizedBaseUrl = normalizeOpenAIBaseUrl(baseURL);
   const openaiClient = new OpenAI({
-    baseURL: normalizeOpenAIBaseUrl(baseURL),
+    baseURL: normalizedBaseUrl,
     apiKey,
   });
 
@@ -269,16 +292,56 @@ export async function extractTracks(
       ? sourceResult.text.slice(0, maxSourceTextChars)
       : sourceResult.text;
 
-  const { data: completion, response, request_id: requestId } = await openaiClient.responses
-    .create({
-      model,
-      instructions: SYSTEM_PROMPT,
-      input: `SOURCE: ${sourceResult.source}\n\n${sourceText}`,
-      max_output_tokens: getPositiveIntegerEnv("AZURE_OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
-      text: { format: TRACK_RESPONSE_FORMAT },
-      temperature: 0,
-    })
-    .withResponse();
+  const aiDependencyStartedAt = Date.now();
+  let completion: AIResponseStatus;
+  let response: Response;
+  let requestId: string | null;
+  try {
+    const result = await openaiClient.responses
+      .create({
+        model,
+        instructions: SYSTEM_PROMPT,
+        input: `SOURCE: ${sourceResult.source}\n\n${sourceText}`,
+        max_output_tokens: getPositiveIntegerEnv("AZURE_OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
+        text: { format: TRACK_RESPONSE_FORMAT },
+        temperature: 0,
+      })
+      .withResponse();
+
+    completion = result.data as AIResponseStatus;
+    response = result.response;
+    requestId = result.request_id;
+    trackDependency({
+      name: "Azure AI Foundry responses.create",
+      target: new URL(normalizedBaseUrl).hostname,
+      dependencyTypeName: "Azure AI Foundry",
+      data: "POST /openai/v1/responses",
+      startedAt: aiDependencyStartedAt,
+      success: response.ok,
+      resultCode: response.status,
+      properties: {
+        operation: "extract_tracklist",
+        videoIdHash,
+      },
+    });
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    trackDependency({
+      name: "Azure AI Foundry responses.create",
+      target: new URL(normalizedBaseUrl).hostname,
+      dependencyTypeName: "Azure AI Foundry",
+      data: "POST /openai/v1/responses",
+      startedAt: aiDependencyStartedAt,
+      success: false,
+      resultCode: statusCode,
+      properties: {
+        errorCategory: getErrorCategory(error),
+        operation: "extract_tracklist",
+        videoIdHash,
+      },
+    });
+    throw error;
+  }
   const aiResponseRequestIds = {
     openAIRequestId: requestId,
     azureApimRequestId: response.headers.get("apim-request-id"),
@@ -287,15 +350,26 @@ export async function extractTracks(
 
   const statusError = getResponseStatusError(completion);
   if (statusError) {
+    trackEvent("ai_extraction_failed", {
+      incompleteReason: completion.incomplete_details?.reason ?? "unknown",
+      operation: "extract_tracklist",
+      resultCategory: "incomplete_response",
+      videoIdHash,
+    });
     context.warn("Azure AI Foundry response did not complete.", {
       aiResponse: getAIResponseDiagnostics(completion, aiResponseRequestIds),
-      selectedSource: getSourceDiagnostics(sourceResult, videoId),
+      selectedSource: getSourceDiagnostics(sourceResult, videoIdHash),
     });
-    return { kind: "upstream-error", error: statusError };
+    return statusError;
   }
 
   const rawContent = completion.output_text;
   if (!rawContent) {
+    trackEvent("ai_extraction_failed", {
+      operation: "extract_tracklist",
+      resultCategory: "empty_response",
+      videoIdHash,
+    });
     return { kind: "upstream-error", error: "No response from AI model." };
   }
 
@@ -306,7 +380,12 @@ export async function extractTracks(
     context.error("Azure AI Foundry returned invalid JSON.", {
       parseError: error instanceof Error ? error.message : String(error),
       aiResponse: getAIResponseDiagnostics(completion, aiResponseRequestIds),
-      selectedSource: getSourceDiagnostics(sourceResult, videoId),
+      selectedSource: getSourceDiagnostics(sourceResult, videoIdHash),
+    });
+    trackEvent("ai_extraction_failed", {
+      operation: "extract_tracklist",
+      resultCategory: "invalid_json",
+      videoIdHash,
     });
     return { kind: "upstream-error", error: "AI model returned an invalid tracklist response." };
   }
@@ -314,8 +393,27 @@ export async function extractTracks(
   const validated = LLMResponseSchema.safeParse(parsed);
 
   if (!validated.success || validated.data.tracks.length === 0) {
+    trackEvent("ai_extraction_no_tracks", {
+      operation: "extract_tracklist",
+      resultCategory: "no_tracks",
+      source: sourceResult.source,
+      videoIdHash,
+    });
     return { kind: "no-tracks" };
   }
+
+  trackEvent(
+    "ai_extraction_completed",
+    {
+      confidence: validated.data.confidence,
+      operation: "extract_tracklist",
+      source: sourceResult.source,
+      videoIdHash,
+    },
+    {
+      trackCount: validated.data.tracks.length,
+    }
+  );
 
   return {
     kind: "tracks",

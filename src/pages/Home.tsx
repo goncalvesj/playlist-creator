@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { extractTracklist } from '../api/extractTracklist';
+import { trackEvent } from '../telemetry/appInsights';
 
 interface HomeProps {
   isAuthenticated: boolean;
@@ -16,6 +17,15 @@ export default function Home({ isAuthenticated, onLogin, onLogout }: HomeProps) 
   const mutation = useMutation({
     mutationFn: extractTracklist,
     onSuccess: (data) => {
+      trackEvent(
+        'tracklist_review_started',
+        {
+          confidence: data.confidence,
+          operation: 'extract_tracklist',
+          source: data.source,
+        },
+        { trackCount: data.tracks.length }
+      );
       navigate('/review', { state: { tracklistData: data, youtubeUrl: url } });
     },
   });

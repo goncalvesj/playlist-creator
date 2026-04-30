@@ -19,6 +19,13 @@ export interface YouTubeVideoMetadata {
   description: string;
 }
 
+export class YouTubeApiError extends Error {
+  constructor(readonly status: number) {
+    super(`YouTube API error: ${status}`);
+    this.name = "YouTubeApiError";
+  }
+}
+
 const TRACK_LINE_PATTERN = /(\d{1,2}:\d{2})|(\s[-–]\s)/;
 const YOUTUBE_HOSTNAMES = new Set(["youtube.com", "www.youtube.com", "m.youtube.com"]);
 
@@ -55,7 +62,7 @@ export async function fetchVideoMetadata(
 ): Promise<YouTubeVideoMetadata | null> {
   const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${apiKey}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`YouTube API error: ${res.status}`);
+  if (!res.ok) throw new YouTubeApiError(res.status);
   const data = (await res.json()) as YouTubeVideoListResponse;
   const snippet = data.items?.[0]?.snippet;
   if (!snippet?.title || !snippet.channelTitle) return null;
@@ -80,11 +87,11 @@ export function pickDescriptionSourceText(description: string): DescriptionSourc
   return null;
 }
 
-export function getSourceDiagnostics(sourceResult: { text: string; source: string }, videoId: string) {
+export function getSourceDiagnostics(sourceResult: { text: string; source: string }, videoIdHash: string) {
   const lines = sourceResult.text.split("\n").filter((line) => line.trim().length > 0);
 
   return {
-    videoId,
+    videoIdHash,
     source: sourceResult.source,
     sourceLength: sourceResult.text.length,
     sourceLineCount: lines.length,
