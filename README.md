@@ -48,12 +48,12 @@ Backend (`api\local.settings.json` locally, Static Web Apps application settings
 
 ```text
 YOUTUBE_API_KEY=<youtube-data-api-key>
-AZURE_OPENAI_TARGET_URI=<foundry-openai-base-url-or-/responses-uri>
-AZURE_OPENAI_MODEL=<model-or-deployment-name>
+AZURE_OPENAI_ENDPOINT=<foundry-openai-v1-base-url>
 AZURE_OPENAI_API_KEY=<foundry-api-key>
+AZURE_OPENAI_DEPLOYMENT=<model-deployment-name>
 ```
 
-`AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_ENDPOINT` are accepted as aliases for `AZURE_OPENAI_TARGET_URI`, and `AZURE_OPENAI_DEPLOYMENT` as an alias for `AZURE_OPENAI_MODEL`.
+`AZURE_OPENAI_ENDPOINT` should be the Foundry OpenAI v1 base URL, for example `https://<your-foundry-host>/openai/v1`. The SDK appends `/responses` for requests.
 
 The function also supports optional knobs for rate limiting, caching, and model output limits — see `api\src\rateLimit.ts`, `api\src\tracklistCache.ts`, and `api\src\env.ts` for the full list.
 
@@ -131,11 +131,11 @@ Status codes:
 ```text
 api\src\
 |-- functions\extract-tracklist.ts    HTTP trigger and request orchestration
-|-- ai\                               Foundry config, prompt, schema, extraction
-|-- youtube\                          Video ID parsing, metadata fetch, source selection
+|-- ai.ts                             Foundry config, prompt, schema, extraction
+|-- youtube.ts                        Video ID parsing, metadata fetch, source selection
 |-- rateLimit.ts                      In-memory per-client rate limiter
 |-- tracklistCache.ts                 In-memory per-video result cache
-|-- env.ts, httpResponse.ts           Shared helpers
+|-- env.ts                            Shared helpers
 ```
 
 ## Limitations

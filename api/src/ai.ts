@@ -7,6 +7,7 @@ import { getSourceDiagnostics, type DescriptionSourceText } from "./youtube";
 const DEFAULT_MAX_SOURCE_TEXT_CHARS = 12_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 4_000;
 const AI_OUTPUT_PREVIEW_CHARS = 800;
+const OPENAI_V1_PATH = "v1";
 
 const SYSTEM_PROMPT = `You extract DJ set tracklists from a YouTube video description.
 Return ONLY tracks present in the input — never invent tracks.
@@ -225,24 +226,40 @@ function getAIResponseDiagnostics(completion: AIResponseStatus, requestIds: AIRe
   };
 }
 
+function normalizeOpenAIBaseUrl(targetUri: string): string {
+  const url = new URL(targetUri.trim());
+  url.search = "";
+  url.hash = "";
+
+  const trimmedPath = url.pathname.replace(/\/+$/, "");
+  const withoutResponses = trimmedPath.endsWith("/responses")
+    ? trimmedPath.slice(0, -"/responses".length)
+    : trimmedPath;
+
+  if (/\/openai\/v\d+$/i.test(withoutResponses)) {
+    url.pathname = `${withoutResponses}/`;
+    return url.toString();
+  }
+
+  url.pathname = `${withoutResponses}/openai/${OPENAI_V1_PATH}/`;
+  return url.toString();
+}
+
 export async function extractTracks(
   sourceResult: DescriptionSourceText,
   videoId: string,
   context: InvocationContext
 ): Promise<ExtractTracksResult> {
-  const baseURL =
-    process.env.AZURE_OPENAI_TARGET_URI ||
-    process.env.AZURE_OPENAI_BASE_URL ||
-    process.env.AZURE_OPENAI_ENDPOINT;
+  const baseURL = process.env.AZURE_OPENAI_ENDPOINT;
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
-  const model = process.env.AZURE_OPENAI_MODEL || process.env.AZURE_OPENAI_DEPLOYMENT;
+  const model = process.env.AZURE_OPENAI_DEPLOYMENT;
 
   if (!baseURL || !apiKey || !model) {
     return { kind: "upstream-error", error: "Azure AI Foundry configuration is incomplete." };
   }
 
   const openaiClient = new OpenAI({
-    baseURL,
+    baseURL: normalizeOpenAIBaseUrl(baseURL),
     apiKey,
   });
 

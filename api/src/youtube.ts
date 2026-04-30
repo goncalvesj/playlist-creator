@@ -20,12 +20,17 @@ export interface YouTubeVideoMetadata {
 }
 
 const TRACK_LINE_PATTERN = /(\d{1,2}:\d{2})|(\s[-–]\s)/;
+const YOUTUBE_HOSTNAMES = new Set(["youtube.com", "www.youtube.com", "m.youtube.com"]);
+
+function isYouTubeHostname(hostname: string): boolean {
+  return YOUTUBE_HOSTNAMES.has(hostname.toLowerCase());
+}
 
 export function extractVideoId(url: string): string | null {
   try {
     const parsed = new URL(url);
 
-    if (parsed.hostname.includes("youtube.com") && parsed.pathname === "/watch") {
+    if (isYouTubeHostname(parsed.hostname) && parsed.pathname === "/watch") {
       return parsed.searchParams.get("v");
     }
 
@@ -34,7 +39,7 @@ export function extractVideoId(url: string): string | null {
     }
 
     const match = parsed.pathname.match(/^\/(shorts|live)\/([^/?]+)/);
-    if (parsed.hostname.includes("youtube.com") && match) {
+    if (isYouTubeHostname(parsed.hostname) && match) {
       return match[2];
     }
 
