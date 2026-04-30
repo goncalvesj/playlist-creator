@@ -1,183 +1,105 @@
 # DJ Set -> Spotify Playlist
 
-Browser app for turning a YouTube DJ set tracklist into a Spotify playlist. The app extracts tracks from the YouTube video description with an Azure AI Foundry-backed Azure Function, searches Spotify from the signed-in user's browser session, lets the user review the matches, and creates a playlist in Spotify.
+Browser app that turns a YouTube DJ set into a Spotify playlist.
 
-## Current implementation
+1. Sign in with Spotify.
+2. Paste a YouTube URL.
+3. Review the matched tracks.
+4. Create the playlist in your account.
 
-- React, TypeScript, Vite, React Router, React Query, and Tailwind CSS for the SPA.
-- Spotify Authorization Code with PKCE runs in the browser through `@spotify/web-api-ts-sdk`.
-- `/api/extract-tracklist` is an Azure Functions v4 HTTP trigger running on Node.js 20.
-- The backend fetches YouTube video metadata, checks the description for a tracklist, and asks Azure AI Foundry for structured JSON.
-- Spotify matching runs in the SPA with `fast-fuzzy` scoring and `p-limit` concurrency control.
-- Deployment is currently through `deploy-static-web-app.ps1` and the Azure Static Web Apps CLI.
+Track extraction from the YouTube description runs in an Azure Function backed by Azure AI Foundry. Spotify search and playlist creation run in the browser using the signed-in user's token, so YouTube and Foundry secrets stay server-side.
+
+This is an MVP for personal use and a small set of approved Spotify users — not a public multi-tenant product.
 
 ## Architecture
 
 ```text
 Azure Static Web App
-|-- /                         Vite-built React SPA
-|   |-- Spotify PKCE auth     Browser-only Spotify token handling
-|   `-- Spotify Web API       Search, profile, playlist creation, add tracks
-|
-`-- /api/extract-tracklist    Azure Function, Node.js 20
-    |-- YouTube Data API v3   Server-side API key
-    `-- Azure AI Foundry      Server-side API key and model deployment
+|-- /                         Vite + React SPA (Spotify PKCE, search, playlist creation)
+`-- /api/extract-tracklist    Azure Function (Node 20)
+    |-- YouTube Data API v3   Reads the video description
+    `-- Azure AI Foundry      Structured-output tracklist extraction
 ```
 
-Secrets stay server-side in local function settings or Static Web Apps application settings. The only Spotify value shipped to the browser is the public Spotify client ID.
+## Tech stack
 
-## Repository layout
-
-```text
-.
-|-- api\
-|   |-- src\functions\extract-tracklist.ts
-|   |-- host.json
-|   |-- local.settings.example.json
-|   |-- package.json
-|   `-- tsconfig.json
-|-- public\
-|-- src\
-|   |-- api\extractTracklist.ts
-|   |-- auth\spotifyAuth.ts
-|   |-- auth\useSpotify.ts
-|   |-- components\TrackRow.tsx
-|   |-- matching\scoreMatch.ts
-|   |-- matching\searchSpotify.ts
-|   |-- pages\Home.tsx
-|   |-- pages\Review.tsx
-|   |-- pages\Done.tsx
-|   |-- App.tsx
-|   |-- index.css
-|   `-- main.tsx
-|-- deploy-static-web-app.ps1
-|-- staticwebapp.config.json
-|-- vite.config.ts
-|-- package.json
-`-- spec.md
-```
+- **Frontend** — Vite, React, TypeScript, React Router, `@tanstack/react-query`, Tailwind v4, `@spotify/web-api-ts-sdk`, `fast-fuzzy`, `p-limit`.
+- **Backend** — Azure Functions v4 on Node 20, `openai` SDK against Azure AI Foundry's v1 Responses API, `zod` for validation.
+- **Hosting** — Azure Static Web Apps. `staticwebapp.config.json` pins `apiRuntime` to `node:20`.
 
 ## Prerequisites
 
 - Node.js and npm.
-- Azure Static Web Apps CLI for local SWA emulation:
-
-  ```powershell
-  npm install -g @azure/static-web-apps-cli
-  ```
-
-- A Spotify Developer app.
+- A Spotify Developer app with redirect URIs `http://127.0.0.1:5173/callback` and `https://<your-swa>.azurestaticapps.net/callback`. Required scopes: `playlist-modify-private`, `playlist-modify-public`, `user-read-private`.
 - A Google Cloud project with YouTube Data API v3 enabled.
 - An Azure AI Foundry model deployment that supports the v1 Responses API.
-- An existing Azure Static Web App and deployment token if you want to deploy with the included script.
+- Azure Static Web Apps CLI (for local emulation and deployment): `npm install -g @azure/static-web-apps-cli`.
 
-## Spotify setup
+## Configuration
 
-Create a Spotify app at <https://developer.spotify.com/dashboard> and configure these redirect URIs:
-
-```text
-http://127.0.0.1:5173/callback
-https://<your-static-web-app>.azurestaticapps.net/callback
-```
-
-Required scopes:
-
-- `playlist-modify-private`
-- `playlist-modify-public`
-- `user-read-private`
-
-If the app stays in Spotify Development Mode, add each allowed Spotify account under the app's users and access settings.
-
-## Environment variables
-
-### Frontend
-
-Create `.env` from `.env.example`:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Set:
+Frontend (`.env`, copied from `.env.example`):
 
 ```text
 VITE_SPOTIFY_CLIENT_ID=<spotify-client-id>
 VITE_SPOTIFY_REDIRECT_URI=http://127.0.0.1:5173/callback
 ```
 
-`VITE_SPOTIFY_REDIRECT_URI` defaults to `<current-origin>/callback`, with a localhost redirect normalized to `127.0.0.1`, but setting it explicitly keeps local Spotify configuration predictable.
-
-### Backend
-
-For local development, create `api\local.settings.json` from `api\local.settings.example.json`:
-
-```powershell
-Copy-Item api\local.settings.example.json api\local.settings.json
-```
-
-Set these values locally and in Azure Static Web Apps application settings:
+Backend (`api\local.settings.json` locally, Static Web Apps application settings in production):
 
 ```text
 YOUTUBE_API_KEY=<youtube-data-api-key>
-AZURE_OPENAI_TARGET_URI=<foundry-openai-v1-responses-or-base-url>
-AZURE_OPENAI_MODEL=<model-or-deployment-name>
+AZURE_OPENAI_ENDPOINT=<foundry-openai-v1-base-url>
 AZURE_OPENAI_API_KEY=<foundry-api-key>
+AZURE_OPENAI_DEPLOYMENT=<model-deployment-name>
 ```
 
-The backend also accepts `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_ENDPOINT` as aliases for the target URI, and `AZURE_OPENAI_DEPLOYMENT` as an alias for the model name. Set `AZURE_OPENAI_LOG_OUTPUT_PREVIEW=true` only when you intentionally want AI response previews in function logs.
+`AZURE_OPENAI_ENDPOINT` should be the Foundry OpenAI v1 base URL, for example `https://<your-foundry-host>/openai/v1`. The SDK appends `/responses` for requests.
+
+The function also supports optional knobs for rate limiting, caching, and model output limits — see `api\src\rateLimit.ts`, `api\src\tracklistCache.ts`, and `api\src\env.ts` for the full list.
 
 ## Local development
-
-Install dependencies for both the SPA and API:
 
 ```powershell
 npm ci
 npm --prefix api ci
-```
-
-Run the Vite app and Azure Functions API through the Static Web Apps emulator:
-
-```powershell
 npm run dev:swa
 ```
 
-Open <http://127.0.0.1:5173>. The script starts the Static Web Apps emulator on port `5173`, runs Vite behind it on port `5174`, and proxies `/api/*` to the local Functions host.
+Open <http://127.0.0.1:5173>. The SWA emulator proxies `/api/*` to the local Functions host. Use `npm run dev` for frontend-only work or `npm --prefix api run start` for direct API work.
 
-For frontend-only work, use:
+## Scripts
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Vite dev server. |
+| `npm run dev:swa` | Build the API and run the app through the SWA emulator. |
+| `npm run build` | Type-check and build the SPA. |
+| `npm run lint` | Run ESLint. |
+| `npm --prefix api run build` | Compile the Azure Functions project. |
+
+## Deployment
 
 ```powershell
-npm run dev
+$env:SWA_CLI_DEPLOYMENT_TOKEN = "<your-static-web-app-deployment-token>"
+.\deploy-static-web-app.ps1
 ```
 
-## App flow
+The script installs root dependencies, builds the SPA, then runs the Azure Static Web Apps CLI to deploy `dist` plus the `api` folder. Useful flags: `-Environment <name>`, `-SkipInstall`, `-SkipBuild`, `-NoApi`.
 
-1. The user signs in with Spotify.
-2. The user submits a YouTube URL from Home.
-3. The SPA posts `{ "youtubeUrl": "..." }` to `/api/extract-tracklist`.
-4. The backend reads the YouTube video description, extracts a structured tracklist with Azure AI Foundry, and returns the result.
-5. Review searches Spotify for each extracted track with a maximum concurrency of five searches.
-6. The user reviews match scores, toggles which matched tracks to include, chooses private/public visibility, and creates the playlist.
-7. Done links to the Spotify playlist and lists tracks that were not added.
+## API
 
-## API contract
+The `/api/extract-tracklist` Azure Function is the only backend endpoint. For each request it:
 
-### Request
+1. Applies an in-memory per-client rate limit and short-lived per-video cache.
+2. Validates the body with `zod` and resolves the YouTube video ID.
+3. Fetches the video snippet from YouTube Data API v3 and checks the description looks like a tracklist (timestamps or ` - ` separators on at least three lines).
+4. Calls Azure AI Foundry's v1 Responses API with a strict JSON schema and `temperature: 0`, returning only tracks present in the description.
 
-```http
-POST /api/extract-tracklist
-Content-Type: application/json
+The rate limit and cache are per running Function instance; rely on provider quotas for stronger limits.
 
-{ "youtubeUrl": "https://www.youtube.com/watch?v=..." }
-```
+### Endpoint
 
-Supported URL forms:
-
-- `youtube.com/watch?v=...`
-- `youtu.be/...`
-- `youtube.com/shorts/...`
-- `youtube.com/live/...`
-
-### Response
+`POST /api/extract-tracklist` with `{ "youtubeUrl": "..." }` returns:
 
 ```json
 {
@@ -187,75 +109,37 @@ Supported URL forms:
   "source": "description",
   "confidence": "high",
   "tracks": [
-    {
-      "artist": "Daft Punk",
-      "title": "Around the World (Alex Gopher Remix)",
-      "timestamp": "00:12:34"
-    }
+    { "artist": "Daft Punk", "title": "Around the World (Alex Gopher Remix)", "timestamp": "00:12:34" }
   ]
 }
 ```
 
-The API returns:
+Supported URL forms: `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/shorts/…`, `youtube.com/live/…`.
 
-- `400` for invalid JSON, an invalid request body, or an unsupported YouTube URL.
-- `404` when the video is not found, the description does not look like a tracklist, or the model returns no tracks.
-- `502` when YouTube, Azure AI Foundry, or required backend configuration fails.
+Status codes:
 
-The current extractor only uses the YouTube video description. It does not inspect captions, comments, OCR, or audio.
+| Status | Meaning |
+| --- | --- |
+| `200` | Tracklist extracted successfully. |
+| `400` | Invalid body, unsupported URL, or unidentifiable client (in production). |
+| `404` | Video not found, description has no tracklist, or the model returned none. |
+| `429` | Rate limit exceeded; response includes `Retry-After` and `retryAfterSeconds`. |
+| `502` | YouTube, Azure AI Foundry, or required configuration failed. |
 
-## Spotify matching
+### Source layout
 
-For each extracted track, the SPA:
-
-1. Searches Spotify with `track:"<title>" artist:"<artist>"`.
-2. If no results are found, strips title parentheticals and retries the field-filtered query.
-3. If there are still no results, searches plain text with `<artist> <title>`.
-4. Scores each candidate with `fast-fuzzy`, weighting artist similarity at `0.4` and title similarity at `0.6`.
-5. Marks scores `>= 0.85` as automatic, scores `>= 0.65` and `< 0.85` as review, and everything else as not found.
-
-Review currently supports selecting or deselecting matched tracks. Alternate-pick and edit-query controls are not implemented in the UI yet.
-
-## Deployment
-
-Set the deployment token for the current PowerShell session, then run:
-
-```powershell
-$env:SWA_CLI_DEPLOYMENT_TOKEN = "<your-static-web-app-deployment-token>"
-.\deploy-static-web-app.ps1
+```text
+api\src\
+|-- functions\extract-tracklist.ts    HTTP trigger and request orchestration
+|-- ai.ts                             Foundry config, prompt, schema, extraction
+|-- youtube.ts                        Video ID parsing, metadata fetch, source selection
+|-- rateLimit.ts                      In-memory per-client rate limiter
+|-- tracklistCache.ts                 In-memory per-video result cache
+|-- env.ts                            Shared helpers
 ```
 
-The script installs root dependencies when needed, builds the Vite app into `dist`, and deploys `dist` plus the `api` folder to the production Azure Static Web Apps environment. The API deployment targets Node.js 20 to match `staticwebapp.config.json`.
+## Limitations
 
-To deploy the frontend without the API:
-
-```powershell
-.\deploy-static-web-app.ps1 -NoApi
-```
-
-Useful script options:
-
-| Option | Purpose |
-| --- | --- |
-| `-Environment <name>` | Deploy to a different SWA environment, default `production`. |
-| `-SkipInstall` | Skip root dependency installation. |
-| `-SkipBuild` | Skip the Vite build step. |
-| `-NoApi` | Deploy only the frontend output. |
-
-## Scripts
-
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Run the Vite dev server. |
-| `npm run dev:swa` | Build the API and run the app through the SWA emulator. |
-| `npm run build` | Type-check and build the SPA. |
-| `npm run lint` | Run ESLint. |
-| `npm --prefix api run build` | Compile the Azure Functions TypeScript project. |
-| `npm --prefix api run start` | Build and start the Functions host directly. |
-
-## Current limitations
-
-- Tracklists must be present as text in the YouTube description.
-- No audio fingerprinting, OCR, comment parsing, captions parsing, or persistence/history.
-- No public multi-tenant user management; Spotify Development Mode is suitable for personal use and a small set of approved users.
-- The review page stores alternate Spotify matches in code but does not expose an alternate picker or query editor.
+- Only extracts tracklists that appear as text in the YouTube description (no captions, comments, OCR, or audio fingerprinting).
+- No persistence or history of past conversions.
+- Spotify Development Mode only — each user must be added under the Spotify app's allowed users.
