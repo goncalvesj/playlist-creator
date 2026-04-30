@@ -77,7 +77,22 @@ The UI is custom React markup styled with Tailwind classes. `shadcn/ui` is not c
 |   |-- local.settings.example.json
 |   |-- package.json
 |   |-- tsconfig.json
-|   `-- src\functions\extract-tracklist.ts
+|   `-- src\
+|       |-- ai\
+|       |   |-- diagnostics.ts
+|       |   |-- extractTracks.ts
+|       |   |-- foundryConfig.ts
+|       |   |-- prompt.ts
+|       |   `-- responseSchemas.ts
+|       |-- functions\extract-tracklist.ts
+|       |-- youtube\
+|       |   |-- metadata.ts
+|       |   |-- sourceSelection.ts
+|       |   `-- videoId.ts
+|       |-- env.ts
+|       |-- httpResponse.ts
+|       |-- rateLimit.ts
+|       `-- tracklistCache.ts
 |-- public\
 |   |-- favicon.svg
 |   `-- icons.svg
