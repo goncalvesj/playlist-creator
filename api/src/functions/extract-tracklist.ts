@@ -216,6 +216,20 @@ function normalizeClientIp(candidate: string): string | null {
   return null;
 }
 
+const LOCAL_DEVELOPMENT_CLIENT_KEY = "local-development";
+
+function isLocalDevelopmentEnvironment(): boolean {
+  // `AZURE_FUNCTIONS_ENVIRONMENT` is set to `Development` by the Azure Functions
+  // Core Tools (`func start`). `WEBSITE_INSTANCE_ID` is injected by the Azure
+  // App Service runtime in deployed environments. Requiring both signals
+  // ensures the local-dev fallback cannot be tripped in production by a
+  // misconfigured environment variable.
+  return (
+    process.env.AZURE_FUNCTIONS_ENVIRONMENT === "Development" &&
+    !process.env.WEBSITE_INSTANCE_ID
+  );
+}
+
 function getClientKey(request: HttpRequest): string | null {
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) {
@@ -223,7 +237,22 @@ function getClientKey(request: HttpRequest): string | null {
       .split(",")
       .map(normalizeClientIp)
       .filter((ip): ip is string => ip !== null);
-    return forwardedIps[0] ?? null;
+    if (forwardedIps[0]) {
+      return forwardedIps[0];
+    }
+  }
+
+  for (const headerName of ["x-azure-clientip", "x-real-ip"]) {
+    const value = request.headers.get(headerName);
+    if (!value) continue;
+    const normalized = normalizeClientIp(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  if (isLocalDevelopmentEnvironment()) {
+    return LOCAL_DEVELOPMENT_CLIENT_KEY;
   }
 
   return null;

@@ -160,7 +160,7 @@ The `/api/extract-tracklist` function includes lightweight in-memory safeguards 
 - `MAX_SOURCE_TEXT_CHARS` caps the description text sent to the model. Defaults to 12000 characters.
 - `AZURE_OPENAI_MAX_OUTPUT_TOKENS` caps model output tokens. Defaults to 4000.
 
-Configure these in `api/local.settings.json` for local development and in Azure Static Web Apps application settings for production. Rate limiting uses the forwarded client IP header. Requests without an identifiable client are rejected so one unidentified caller cannot exhaust a shared bucket. The in-memory rate limit and cache are per running function instance, so use provider-level quotas/budgets as an additional backstop for personal API keys.
+Configure these in `api/local.settings.json` for local development and in Azure Static Web Apps application settings for production. Rate limiting identifies the caller from the `x-forwarded-for`, `x-azure-clientip`, or `x-real-ip` headers (in that order). When running locally via the Azure Functions Core Tools (`AZURE_FUNCTIONS_ENVIRONMENT=Development` and no `WEBSITE_INSTANCE_ID`), unidentified callers share a single `local-development` rate-limit bucket so the dev loop is not blocked. In production, requests without an identifiable client are rejected so one unidentified caller cannot exhaust a shared bucket. The in-memory rate limit and cache are per running function instance, so use provider-level quotas/budgets as an additional backstop for personal API keys.
 
 ## App flow
 
