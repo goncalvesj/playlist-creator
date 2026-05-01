@@ -1,8 +1,9 @@
 import type { InvocationContext } from "@azure/functions";
+import type { Span } from "@opentelemetry/api";
 import OpenAI from "openai";
 import { z } from "zod";
 import { getPositiveIntegerEnv } from "./env";
-import { getErrorCategory, getErrorStatusCode, hashIdentifier, trackDependency, trackEvent } from "./telemetry";
+import { hashIdentifier, runWithDependencySpan, trackEvent } from "./telemetry";
 import { getSourceDiagnostics, type DescriptionSourceText } from "./youtube";
 
 const DEFAULT_MAX_SOURCE_TEXT_CHARS = 12_000;
@@ -242,6 +243,33 @@ function getAIResponseDiagnostics(completion: AIResponseStatus, requestIds: AIRe
   };
 }
 
+function getNumberField(record: unknown, key: string): number | null {
+  if (!isRecord(record)) {
+    return null;
+  }
+
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function setAIUsageAttributes(span: Span, usage: unknown) {
+  const inputTokens = getNumberField(usage, "input_tokens") ?? getNumberField(usage, "prompt_tokens");
+  const outputTokens = getNumberField(usage, "output_tokens") ?? getNumberField(usage, "completion_tokens");
+  const totalTokens = getNumberField(usage, "total_tokens");
+
+  if (inputTokens !== null) {
+    span.setAttribute("gen_ai.usage.input_tokens", inputTokens);
+  }
+
+  if (outputTokens !== null) {
+    span.setAttribute("gen_ai.usage.output_tokens", outputTokens);
+  }
+
+  if (totalTokens !== null) {
+    span.setAttribute("gen_ai.usage.total_tokens", totalTokens);
+  }
+}
+
 function normalizeOpenAIBaseUrl(targetUri: string): string {
   const url = new URL(targetUri.trim());
   url.search = "";
@@ -292,56 +320,51 @@ export async function extractTracks(
       ? sourceResult.text.slice(0, maxSourceTextChars)
       : sourceResult.text;
 
-  const aiDependencyStartedAt = Date.now();
-  let completion: AIResponseStatus;
-  let response: Response;
-  let requestId: string | null;
-  try {
-    const result = await openaiClient.responses
-      .create({
-        model,
-        instructions: SYSTEM_PROMPT,
-        input: `SOURCE: ${sourceResult.source}\n\n${sourceText}`,
-        max_output_tokens: getPositiveIntegerEnv("AZURE_OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
-        text: { format: TRACK_RESPONSE_FORMAT },
-        temperature: 0,
-      })
-      .withResponse();
+  const result = await runWithDependencySpan(
+    {
+      name: "Azure AI Foundry responses.create",
+      target: new URL(normalizedBaseUrl).hostname,
+      dependencyTypeName: "Azure AI Foundry",
+      data: "POST /openai/v1/responses",
+      properties: {
+        operation: "extract_tracklist",
+        videoIdHash,
+      },
+      attributes: {
+        "gen_ai.operation.name": "responses.create",
+        "gen_ai.request.model": model,
+        "gen_ai.system": "azure.ai.foundry",
+        "source.length": sourceText.length,
+        "source.was_truncated": sourceResult.text.length > maxSourceTextChars,
+      },
+    },
+    async (span) => {
+      const responseWithBody = await openaiClient.responses
+        .create({
+          model,
+          instructions: SYSTEM_PROMPT,
+          input: `SOURCE: ${sourceResult.source}\n\n${sourceText}`,
+          max_output_tokens: getPositiveIntegerEnv("AZURE_OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS),
+          text: { format: TRACK_RESPONSE_FORMAT },
+          temperature: 0,
+        })
+        .withResponse();
 
-    completion = result.data as AIResponseStatus;
-    response = result.response;
-    requestId = result.request_id;
-    trackDependency({
-      name: "Azure AI Foundry responses.create",
-      target: new URL(normalizedBaseUrl).hostname,
-      dependencyTypeName: "Azure AI Foundry",
-      data: "POST /openai/v1/responses",
-      startedAt: aiDependencyStartedAt,
-      success: response.ok,
-      resultCode: response.status,
-      properties: {
-        operation: "extract_tracklist",
-        videoIdHash,
-      },
-    });
-  } catch (error) {
-    const statusCode = getErrorStatusCode(error);
-    trackDependency({
-      name: "Azure AI Foundry responses.create",
-      target: new URL(normalizedBaseUrl).hostname,
-      dependencyTypeName: "Azure AI Foundry",
-      data: "POST /openai/v1/responses",
-      startedAt: aiDependencyStartedAt,
-      success: false,
-      resultCode: statusCode,
-      properties: {
-        errorCategory: getErrorCategory(error),
-        operation: "extract_tracklist",
-        videoIdHash,
-      },
-    });
-    throw error;
-  }
+      const completionBody = responseWithBody.data as AIResponseStatus;
+      span.setAttributes({
+        "gen_ai.response.id": completionBody.id ?? "unknown",
+        "gen_ai.response.model": completionBody.model ?? model,
+        "http.response.status_code": responseWithBody.response.status,
+        resultCode: String(responseWithBody.response.status),
+      });
+      setAIUsageAttributes(span, completionBody.usage);
+
+      return responseWithBody;
+    }
+  );
+  const completion = result.data as AIResponseStatus;
+  const response = result.response;
+  const requestId = result.request_id;
   const aiResponseRequestIds = {
     openAIRequestId: requestId,
     azureApimRequestId: response.headers.get("apim-request-id"),

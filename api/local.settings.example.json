@@ -16,7 +16,9 @@
     "AZURE_OPENAI_MAX_OUTPUT_TOKENS": "4000",
     "APPLICATIONINSIGHTS_CONNECTION_STRING": "",
     "APPLICATIONINSIGHTS_CLOUD_ROLE_NAME": "playlist-creator-api",
+    "OTEL_SERVICE_NAME": "playlist-creator-api",
     "APPLICATION_ENVIRONMENT": "development",
-    "APP_VERSION": "local"
+    "APP_VERSION": "local",
+    "OTEL_TRACES_SAMPLER": "always_on"
   }
 }

@@ -58,6 +58,7 @@ AZURE_OPENAI_API_KEY=<foundry-api-key>
 AZURE_OPENAI_DEPLOYMENT=<model-deployment-name>
 APPLICATIONINSIGHTS_CONNECTION_STRING=<app-insights-connection-string>
 APPLICATIONINSIGHTS_CLOUD_ROLE_NAME=playlist-creator-api
+OTEL_SERVICE_NAME=playlist-creator-api
 APPLICATION_ENVIRONMENT=development
 APP_VERSION=local
 ```
@@ -66,7 +67,9 @@ APP_VERSION=local
 
 The function also supports optional knobs for rate limiting, caching, and model output limits — see `api\src\rateLimit.ts`, `api\src\tracklistCache.ts`, and `api\src\env.ts` for the full list.
 
-Application Insights telemetry is optional locally and activates only when the connection string is configured. The app emits privacy-safe diagnostics for SPA routes, browser vitals, frontend exceptions, `/api/extract-tracklist` correlation, YouTube and Azure AI dependencies, Spotify matching and playlist creation, cache hits, rate limits, and sanitized failure categories. Telemetry uses dimensions such as `cloudRoleName`, `environment`, `appVersion`, `buildSha`, `operation`, `resultCategory`, `correlationId`, and hashed `videoIdHash`; it intentionally avoids logging playlist names, YouTube URLs, Spotify tokens, user emails, and raw provider responses.
+Application Insights telemetry is optional locally and activates only when the connection string is configured. The browser uses the Application Insights web SDK. The Azure Functions API uses OpenTelemetry (`telemetryMode: "OpenTelemetry"` in `api\host.json`) with the Azure Monitor exporter plus Azure Functions/OpenAI auto-instrumentation. The app emits privacy-safe diagnostics for SPA routes, browser vitals, frontend exceptions, `/api/extract-tracklist` correlation, YouTube and Azure AI dependencies, Spotify matching and playlist creation, cache hits, rate limits, and sanitized failure categories. Telemetry uses dimensions such as `cloudRoleName`, `environment`, `appVersion`, `buildSha`, `operation`, `resultCategory`, `correlationId`, and hashed `videoIdHash`; it intentionally avoids logging playlist names, YouTube URLs, Spotify tokens, user emails, raw provider responses, model prompts, and model responses.
+
+> **Local SWA emulator note:** the Static Web Apps CLI proxy injects a W3C `traceparent` with the not-sampled flag when forwarding `/api/*` calls. With the default `parentbased_always_on` sampler, this drops every backend span. `api/local.settings.example.json` therefore sets `OTEL_TRACES_SAMPLER=always_on` for local development. This override is **not** needed in Azure-hosted SWA and should not be set in production unless you intentionally want 100% sampling.
 
 ## Local development
 

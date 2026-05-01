@@ -6,10 +6,9 @@ import {
   correlationProperties,
   durationMs,
   getErrorCategory,
-  getErrorStatusCode,
   getRequestCorrelation,
   hashIdentifier,
-  trackDependency,
+  runWithDependencySpan,
   trackEvent,
   trackException,
 } from "../telemetry";
@@ -145,41 +144,20 @@ export async function extractTracklist(
       });
     }
 
-    const youtubeDependencyStartedAt = Date.now();
-    let metadata;
-    try {
-      metadata = await fetchVideoMetadata(videoId, apiKey);
-      trackDependency({
+    const metadata = await runWithDependencySpan(
+      {
         name: "YouTube Data API videos.list",
         target: "youtube.googleapis.com",
         dependencyTypeName: "YouTube Data API",
         data: "GET /youtube/v3/videos",
-        startedAt: youtubeDependencyStartedAt,
-        success: true,
         resultCode: 200,
         properties: {
           ...baseTelemetryProperties,
           videoIdHash,
         },
-      });
-    } catch (error) {
-      const statusCode = getErrorStatusCode(error);
-      trackDependency({
-        name: "YouTube Data API videos.list",
-        target: "youtube.googleapis.com",
-        dependencyTypeName: "YouTube Data API",
-        data: "GET /youtube/v3/videos",
-        startedAt: youtubeDependencyStartedAt,
-        success: false,
-        resultCode: statusCode,
-        properties: {
-          ...baseTelemetryProperties,
-          errorCategory: getErrorCategory(error),
-          videoIdHash,
-        },
-      });
-      throw error;
-    }
+      },
+      () => fetchVideoMetadata(videoId, apiKey)
+    );
 
     if (!metadata) {
       return respond(404, { error: "Video not found." }, {

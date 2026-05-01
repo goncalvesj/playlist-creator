@@ -1,5 +1,5 @@
 import type { HttpRequest } from "@azure/functions";
-import * as appInsights from "applicationinsights";
+import { SpanKind, SpanStatusCode, trace, type Attributes, type Span } from "@opentelemetry/api";
 import { createHash, randomUUID } from "node:crypto";
 
 type TelemetryProperties = Record<string, string>;
@@ -23,66 +23,40 @@ interface DependencyTelemetryInput {
   properties?: TelemetryProperties;
 }
 
-const CLOUD_ROLE_NAME = process.env.APPLICATIONINSIGHTS_CLOUD_ROLE_NAME || "playlist-creator-api";
+interface ActiveDependencyTelemetryInput {
+  name: string;
+  target: string;
+  dependencyTypeName: string;
+  data: string;
+  resultCode?: string | number | null;
+  properties?: TelemetryProperties;
+  attributes?: Attributes;
+}
+
+const CLOUD_ROLE_NAME =
+  process.env.OTEL_SERVICE_NAME || process.env.APPLICATIONINSIGHTS_CLOUD_ROLE_NAME || "playlist-creator-api";
 const APP_VERSION = process.env.APP_VERSION || process.env.GITHUB_SHA || process.env.WEBSITE_DEPLOYMENT_ID || "local";
 const ENVIRONMENT =
   process.env.APPLICATION_ENVIRONMENT || process.env.AZURE_FUNCTIONS_ENVIRONMENT || process.env.NODE_ENV || "unknown";
+const tracer = trace.getTracer("playlist-creator-api", APP_VERSION);
 
-let telemetryInitialized = false;
-let telemetryAvailable = false;
-
-function baseProperties(): TelemetryProperties {
+function baseAttributes(): Attributes {
   return {
     appVersion: APP_VERSION,
     cloudRoleName: CLOUD_ROLE_NAME,
     environment: ENVIRONMENT,
+    "service.name": CLOUD_ROLE_NAME,
+    "service.version": APP_VERSION,
+    "deployment.environment.name": ENVIRONMENT,
   };
 }
 
-function getTelemetryClient(): appInsights.TelemetryClient | null {
-  if (!telemetryInitialized) {
-    telemetryInitialized = true;
-
-    const setupString =
-      process.env.APPLICATIONINSIGHTS_CONNECTION_STRING || process.env.APPINSIGHTS_INSTRUMENTATIONKEY;
-    if (!setupString) {
-      return null;
-    }
-
-    appInsights
-      .setup(setupString)
-      .setAutoCollectRequests(false)
-      .setAutoCollectIncomingRequestAzureFunctions(false)
-      .setAutoCollectDependencies(false)
-      .setAutoCollectExceptions(false)
-      .setAutoCollectConsole(false)
-      .setAutoCollectPerformance(false, false)
-      .setAutoCollectPreAggregatedMetrics(false)
-      .setAutoCollectHeartbeat(true)
-      .setUseDiskRetryCaching(true)
-      .start();
-
-    appInsights.defaultClient.context.tags[appInsights.defaultClient.context.keys.cloudRole] = CLOUD_ROLE_NAME;
-    appInsights.defaultClient.commonProperties = baseProperties();
-
-    // Flip success=false for any request/dependency telemetry whose resultCode is a 4xx/5xx.
-    // Note: this only affects telemetry emitted by this worker SDK. The Azure Functions host
-    // emits its own `requests` rows (Host.Results) which this processor cannot intercept.
-    appInsights.defaultClient.addTelemetryProcessor((envelope) => {
-      const baseData = (envelope.data as { baseData?: { resultCode?: string | number; success?: boolean } })?.baseData;
-      if (baseData && baseData.resultCode !== undefined && baseData.resultCode !== null) {
-        const code = getNumericStatus(baseData.resultCode);
-        if (code !== null && code >= 400) {
-          baseData.success = false;
-        }
-      }
-      return true;
-    });
-
-    telemetryAvailable = true;
-  }
-
-  return telemetryAvailable ? appInsights.defaultClient : null;
+function toAttributes(properties?: TelemetryProperties, measurements?: TelemetryMeasurements): Attributes {
+  return {
+    ...baseAttributes(),
+    ...(properties ?? {}),
+    ...(measurements ?? {}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -100,6 +74,38 @@ function getNumericStatus(value: unknown): number | null {
   }
 
   return null;
+}
+
+function sanitizedError(error: unknown): Error {
+  const sanitized = new Error(getErrorCategory(error));
+  sanitized.name = error instanceof Error && error.name ? error.name : "TelemetryError";
+  return sanitized;
+}
+
+function setErrorAttributes(span: Span, error: unknown) {
+  const errorCategory = getErrorCategory(error);
+  span.recordException(sanitizedError(error));
+  span.setAttributes({
+    "error.category": errorCategory,
+    errorCategory,
+  });
+  span.setStatus({ code: SpanStatusCode.ERROR, message: errorCategory });
+}
+
+function setResultAttributes(span: Span, success: boolean, resultCode?: string | number | null) {
+  const effectiveResultCode = resultCode ?? (success ? "200" : "0");
+  const numericStatus = getNumericStatus(effectiveResultCode);
+
+  span.setAttributes({
+    resultCode: String(effectiveResultCode),
+    success,
+  });
+
+  if (numericStatus !== null) {
+    span.setAttribute("http.response.status_code", numericStatus);
+  }
+
+  span.setStatus({ code: success ? SpanStatusCode.OK : SpanStatusCode.ERROR });
 }
 
 export function getErrorStatusCode(error: unknown): number | null {
@@ -191,43 +197,91 @@ export function trackEvent(
   properties?: TelemetryProperties,
   measurements?: TelemetryMeasurements
 ) {
-  getTelemetryClient()?.trackEvent({
-    name,
-    properties: {
-      ...baseProperties(),
-      ...properties,
-    },
-    measurements,
+  const attributes = {
+    ...toAttributes(properties, measurements),
+    "event.name": name,
+    "telemetry.type": "event",
+  };
+  const activeSpan = trace.getActiveSpan();
+  activeSpan?.addEvent(name, attributes);
+
+  const span = tracer.startSpan(`event ${name}`, {
+    kind: SpanKind.INTERNAL,
+    attributes,
   });
+  span.setStatus({ code: SpanStatusCode.OK });
+  span.end();
 }
 
 export function trackException(error: unknown, properties?: TelemetryProperties) {
-  const sanitized = new Error(getErrorCategory(error));
-  sanitized.name = error instanceof Error && error.name ? error.name : "TelemetryError";
-
-  getTelemetryClient()?.trackException({
-    exception: sanitized,
-    properties: {
-      ...baseProperties(),
+  const attributes = {
+    ...toAttributes({
       errorCategory: getErrorCategory(error),
-      ...properties,
-    },
+      ...(properties ?? {}),
+    }),
+    "telemetry.type": "exception",
+  };
+
+  const activeSpan = trace.getActiveSpan();
+  if (activeSpan) {
+    setErrorAttributes(activeSpan, error);
+  }
+
+  const span = tracer.startSpan("exception", {
+    kind: SpanKind.INTERNAL,
+    attributes,
   });
+  setErrorAttributes(span, error);
+  span.end();
 }
 
 export function trackDependency(input: DependencyTelemetryInput) {
-  getTelemetryClient()?.trackDependency({
-    name: input.name,
-    target: input.target,
-    dependencyTypeName: input.dependencyTypeName,
-    data: input.data,
-    duration: durationMs(input.startedAt),
-    success: input.success,
-    resultCode: input.resultCode ?? (input.success ? "200" : "0"),
-    properties: {
-      ...baseProperties(),
-      resultCode: String(input.resultCode ?? (input.success ? "200" : "0")),
-      ...input.properties,
+  const endedAt = Date.now();
+  const span = tracer.startSpan(input.name, {
+    kind: SpanKind.CLIENT,
+    startTime: new Date(input.startedAt),
+    attributes: {
+      ...toAttributes(input.properties),
+      "dependency.type": input.dependencyTypeName,
+      "dependency.target": input.target,
+      "dependency.data": input.data,
+      "server.address": input.target,
     },
   });
+
+  setResultAttributes(span, input.success, input.resultCode);
+  span.end(new Date(endedAt));
+}
+
+export async function runWithDependencySpan<T>(
+  input: ActiveDependencyTelemetryInput,
+  operation: (span: Span) => Promise<T>
+): Promise<T> {
+  return tracer.startActiveSpan(
+    input.name,
+    {
+      kind: SpanKind.CLIENT,
+      attributes: {
+        ...toAttributes(input.properties),
+        ...(input.attributes ?? {}),
+        "dependency.type": input.dependencyTypeName,
+        "dependency.target": input.target,
+        "dependency.data": input.data,
+        "server.address": input.target,
+      },
+    },
+    async (span) => {
+      try {
+        const result = await operation(span);
+        setResultAttributes(span, true, input.resultCode);
+        return result;
+      } catch (error) {
+        setResultAttributes(span, false, getErrorStatusCode(error));
+        setErrorAttributes(span, error);
+        throw error;
+      } finally {
+        span.end();
+      }
+    }
+  );
 }
