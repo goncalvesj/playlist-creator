@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { z } from "zod";
 import { getPositiveIntegerEnv } from "./env";
 import { hashIdentifier, runWithDependencySpan, trackEvent } from "./telemetry";
+import { isRecord } from "./utils/isRecord";
 import { getSourceDiagnostics, type DescriptionSourceText } from "./youtube";
 
 const DEFAULT_MAX_SOURCE_TEXT_CHARS = 12_000;
@@ -126,10 +127,6 @@ function getResponseStatusError(
 function textPreview(text: string, maxLength = AI_OUTPUT_PREVIEW_CHARS): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getStringField(record: Record<string, unknown>, key: string): string | undefined {

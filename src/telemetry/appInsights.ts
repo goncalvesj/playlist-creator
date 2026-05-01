@@ -166,7 +166,7 @@ export function initializeTelemetry() {
   appInsights = new ApplicationInsights({
     config: {
       connectionString: CONNECTION_STRING,
-      autoTrackPageVisitTime: true,
+      autoTrackPageVisitTime: false,
       disableFetchTracking: false,
       enableAjaxErrorStatusText: true,
       enableCorsCorrelation: true,
@@ -181,17 +181,6 @@ export function initializeTelemetry() {
   });
 
   appInsights.loadAppInsights();
-
-  // Suppress the SDK's auto-emitted initial PageView. Route changes (including the first
-  // route render) are tracked explicitly by RouteTelemetry, so the auto one is a duplicate.
-  let initialPageViewSuppressed = false;
-  appInsights.addTelemetryInitializer((item) => {
-    if (!initialPageViewSuppressed && item.baseType === 'PageviewData') {
-      initialPageViewSuppressed = true;
-      return false;
-    }
-    return true;
-  });
 
   appInsights.addTelemetryInitializer((item) => {
     item.tags = {
@@ -212,7 +201,7 @@ export function initializeTelemetry() {
 
 export function trackPageView(pathname: string) {
   appInsights?.trackPageView({
-    name: pathname === '/' ? 'home' : pathname.replace(/^\//, ''),
+    name: pageNameFor(pathname),
     uri: pathname,
     properties: getTelemetryProperties({ route: pathname }),
   });
