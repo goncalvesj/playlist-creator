@@ -4,6 +4,7 @@ import { useSpotify } from './auth/useSpotify';
 import Home from './pages/Home';
 import Review from './pages/Review';
 import Done from './pages/Done';
+import UpdatePrompt from './components/UpdatePrompt';
 import RouteTelemetry from './telemetry/RouteTelemetry';
 
 const queryClient = new QueryClient();
@@ -43,6 +44,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <RouteTelemetry />
+        <UpdatePrompt />
         <AppRoutes />
       </BrowserRouter>
     </QueryClientProvider>

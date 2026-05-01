@@ -23,7 +23,7 @@ Azure Static Web App
 
 ## Tech stack
 
-- **Frontend** — Vite, React, TypeScript, React Router, `@tanstack/react-query`, Tailwind v4, `@spotify/web-api-ts-sdk`, `fast-fuzzy`, `p-limit`.
+- **Frontend** — Vite, React, TypeScript, React Router, `@tanstack/react-query`, Tailwind v4, `@spotify/web-api-ts-sdk`, `fast-fuzzy`, `p-limit`, Workbox PWA service worker.
 - **Backend** — Azure Functions v4 on Node 20, `openai` SDK against Azure AI Foundry's v1 Responses API, `zod` for validation.
 - **Hosting** — Azure Static Web Apps. `staticwebapp.config.json` pins `apiRuntime` to `node:20`.
 
@@ -89,7 +89,16 @@ Open <http://127.0.0.1:5173>. The SWA emulator proxies `/api/*` to the local Fun
 | `npm run dev:swa` | Build the API and run the app through the SWA emulator. |
 | `npm run build` | Type-check and build the SPA. |
 | `npm run lint` | Run ESLint. |
+| `npm run generate:icons` | Regenerate PWA PNG icons from `public\favicon.svg`. |
 | `npm --prefix api run build` | Compile the Azure Functions project. |
+
+## PWA
+
+The frontend is installable as a PWA. `public\manifest.webmanifest` defines the app name, theme colors, and install icons in `public\icons\`. The production build generates a Workbox service worker that precaches the app shell and same-origin static assets so repeat loads are fast and offline navigation can still render the SPA shell.
+
+Core features still require the network: Spotify sign-in/search/playlist creation, YouTube metadata, Azure AI Foundry extraction, and `/api/extract-tracklist` are not cached. New deployments install in the background and show an in-app "New version available" toast; choose **Reload** to activate the new service worker.
+
+To verify installability locally, run `npm run build` and `npm run preview`, then check DevTools > Application for the manifest, service worker, and icons, or run a Lighthouse PWA audit. To refresh placeholder icons after changing `public\favicon.svg`, run `npm run generate:icons` and commit the generated PNGs.
 
 ## Deployment
 

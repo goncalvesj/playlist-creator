@@ -1,7 +1,7 @@
 {
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["/api/*", "/assets/*", "/*.{css,js,ico,png,svg}"]
+    "exclude": ["/api/*", "/assets/*", "/manifest.webmanifest", "/*.{css,js,ico,png,svg}"]
   },
   "platform": {
     "apiRuntime": "node:20"
