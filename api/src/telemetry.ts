@@ -1,6 +1,7 @@
 import type { HttpRequest } from "@azure/functions";
 import { SpanKind, SpanStatusCode, trace, type Attributes, type Span } from "@opentelemetry/api";
 import { createHash, randomUUID } from "node:crypto";
+import { isRecord } from "./utils/isRecord";
 
 type TelemetryProperties = Record<string, string>;
 type TelemetryMeasurements = Record<string, number>;
@@ -57,10 +58,6 @@ function toAttributes(properties?: TelemetryProperties, measurements?: Telemetry
     ...(properties ?? {}),
     ...(measurements ?? {}),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getNumericStatus(value: unknown): number | null {
@@ -163,6 +160,9 @@ function sanitizeCorrelationValue(value: string | null): string | null {
   return /^[A-Za-z0-9._:-]{1,128}$/.test(trimmed) ? trimmed : null;
 }
 
+// Parse a W3C Trace Context `traceparent` header in the form:
+// `version-trace-id-parent-id-trace-flags` (for example, `00-<32 hex>-<16 hex>-<2 hex>`).
+// Returns the extracted `trace-id` (the second field) or null if the header is missing/invalid.
 function getTraceId(traceparent: string | null): string | null {
   const sanitized = sanitizeCorrelationValue(traceparent);
   if (!sanitized) return null;

@@ -142,9 +142,6 @@ export function checkRateLimit(request: HttpRequest): RateLimitResult {
       removeOldestRateLimitEntry();
     }
 
-    if (entry) {
-      rateLimitStore.delete(clientKey);
-    }
     rateLimitStore.set(clientKey, { windowStart: now, count: 1, createdAt: now });
     return { allowed: true };
   }
