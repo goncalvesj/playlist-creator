@@ -24,12 +24,13 @@ function extractSharedUrl(value: string | null) {
     return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '';
   } catch {
     const match = trimmed.match(/https?:\/\/[^\s<>"']+/i);
-    return match ? match[0].replace(/[),.]+$/, '') : '';
+    return match ? match[0].replace(/[),.;!]+$/, '') : '';
   }
 }
 
 function getInitialUrl() {
   const params = new URLSearchParams(window.location.search);
+  // Prefer the explicit share URL, then fall back to text/title fields that may contain a link.
   const sharedUrl = [params.get('url'), params.get('text'), params.get('title')]
     .map(extractSharedUrl)
     .find(Boolean);
