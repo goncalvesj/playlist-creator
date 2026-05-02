@@ -10,13 +10,46 @@ interface HomeProps {
   onLogout: () => void;
 }
 
+const PENDING_SHARED_URL_KEY = 'playlist-creator:pending-shared-url';
+
+function extractSharedUrl(value: string | null) {
+  if (!value) {
+    return '';
+  }
+
+  const trimmed = value.trim();
+
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '';
+  } catch {
+    const match = trimmed.match(/https?:\/\/[^\s<>"']+/i);
+    return match ? match[0].replace(/[),.]+$/, '') : '';
+  }
+}
+
+function getInitialUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const sharedUrl = [params.get('url'), params.get('text'), params.get('title')]
+    .map(extractSharedUrl)
+    .find(Boolean);
+
+  if (sharedUrl) {
+    sessionStorage.setItem(PENDING_SHARED_URL_KEY, sharedUrl);
+    return sharedUrl;
+  }
+
+  return sessionStorage.getItem(PENDING_SHARED_URL_KEY) || '';
+}
+
 export default function Home({ isAuthenticated, onLogin, onLogout }: HomeProps) {
-  const [url, setUrl] = useState('');
+  const [url, setUrl] = useState(getInitialUrl);
   const navigate = useNavigate();
 
   const mutation = useMutation({
     mutationFn: extractTracklist,
     onSuccess: (data) => {
+      sessionStorage.removeItem(PENDING_SHARED_URL_KEY);
       trackEvent(
         'tracklist_review_started',
         {
