@@ -11,6 +11,10 @@ Track extraction from the YouTube description runs in an Azure Function backed b
 
 This is an MVP for personal use and a small set of approved Spotify users — not a public multi-tenant product.
 
+## Why this exists
+
+Picture it: you stumble onto a 2-hour YouTube DJ set that absolutely slaps. You want it on Spotify. Forty-five minutes later you're squinting at a timestamped description, alt-tabbing between tabs, second-guessing every "feat." spelling, and questioning your life choices. By track 12 you've given up and gone back to your sad, set-less Discover Weekly. This app is the result of me losing that fight one too many times and deciding the computer can do the squinting.
+
 ## Architecture
 
 ```text
