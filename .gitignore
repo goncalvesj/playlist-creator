@@ -14,9 +14,27 @@ dist-ssr
 
 # Environment
 .env
+.env*.local
+# Keep tracked, non-secret env files explicitly allowed
+!.env.example
+!.env.development
+!.env.production
 
 # Azure Functions local settings
-api/local.settings.json
+**/local.settings.json
+!**/local.settings.example.json
+
+# Secrets and credentials
+*.pem
+*.pfx
+*.p12
+*.cer
+*.key
+!public/**/*.key
+secrets.json
+secrets.*.json
+*.secret
+credentials.json
 api/dist
 
 # Editor directories and files
