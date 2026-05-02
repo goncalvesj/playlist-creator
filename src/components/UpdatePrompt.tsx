@@ -65,6 +65,7 @@ export default function UpdatePrompt() {
   return (
     <div
       role="status"
+      aria-label="App update available"
       className="fixed right-4 bottom-4 z-50 max-w-sm rounded-xl border border-gray-700 bg-gray-900 p-4 text-white shadow-2xl"
     >
       <div className="space-y-3">

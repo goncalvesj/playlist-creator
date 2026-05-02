@@ -4,6 +4,8 @@ import {
   type IDependencyTelemetry,
 } from '@microsoft/applicationinsights-web';
 import { onCLS, onFCP, onINP, onLCP, onTTFB, type MetricType } from 'web-vitals';
+import { getErrorStatusCode } from '../utils/getErrorStatusCode';
+import { toSanitizedError } from '../utils/toSanitizedError';
 
 type TelemetryProperties = Record<string, string>;
 type TelemetryMeasurements = Record<string, number>;
@@ -42,47 +44,6 @@ function baseProperties(): TelemetryProperties {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function toNumericStatus(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === 'string') {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  return null;
-}
-
-export function getErrorStatusCode(error: unknown): number | null {
-  if (!isRecord(error)) {
-    return null;
-  }
-
-  for (const key of ['status', 'statusCode', 'code']) {
-    const status = toNumericStatus(error[key]);
-    if (status !== null) {
-      return status;
-    }
-  }
-
-  if (isRecord(error.response)) {
-    for (const key of ['status', 'statusCode']) {
-      const status = toNumericStatus(error.response[key]);
-      if (status !== null) {
-        return status;
-      }
-    }
-  }
-
-  return null;
-}
-
 export function getErrorCategory(error: unknown): string {
   const status = getErrorStatusCode(error);
   if (status === 429) return 'rate_limited';
@@ -112,12 +73,6 @@ export function createCorrelationId(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function toSanitizedError(error: unknown): Error {
-  const sanitized = new Error(getErrorCategory(error));
-  sanitized.name = error instanceof Error && error.name ? error.name : 'TelemetryError';
-  return sanitized;
 }
 
 function getTelemetryProperties(properties?: TelemetryProperties): TelemetryProperties {
@@ -166,7 +121,7 @@ export function initializeTelemetry() {
   appInsights = new ApplicationInsights({
     config: {
       connectionString: CONNECTION_STRING,
-      autoTrackPageVisitTime: false,
+      autoTrackPageVisitTime: true,
       disableFetchTracking: false,
       enableAjaxErrorStatusText: true,
       enableCorsCorrelation: true,
@@ -181,6 +136,17 @@ export function initializeTelemetry() {
   });
 
   appInsights.loadAppInsights();
+
+  // Suppress the SDK's auto-emitted initial PageView. Route changes (including the first
+  // route render) are tracked explicitly by RouteTelemetry, so the auto one is a duplicate.
+  let initialPageViewSuppressed = false;
+  appInsights.addTelemetryInitializer((item) => {
+    if (!initialPageViewSuppressed && item.baseType === 'PageviewData') {
+      initialPageViewSuppressed = true;
+      return false;
+    }
+    return true;
+  });
 
   appInsights.addTelemetryInitializer((item) => {
     item.tags = {
