@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { extractTracklist } from '../api/extractTracklist';
 import { trackEvent } from '../telemetry/appInsights';
+import { getRecentYoutubeUrls, saveRecentYoutubeUrl } from '../utils/recentYoutubeUrls';
 
 interface HomeProps {
   isAuthenticated: boolean;
@@ -45,12 +46,14 @@ function getInitialUrl() {
 
 export default function Home({ isAuthenticated, onLogin, onLogout }: HomeProps) {
   const [url, setUrl] = useState(getInitialUrl);
+  const [recentUrls, setRecentUrls] = useState(getRecentYoutubeUrls);
   const navigate = useNavigate();
 
   const mutation = useMutation({
     mutationFn: extractTracklist,
-    onSuccess: (data) => {
+    onSuccess: (data, submittedUrl) => {
       sessionStorage.removeItem(PENDING_SHARED_URL_KEY);
+      setRecentUrls(saveRecentYoutubeUrl(submittedUrl));
       trackEvent(
         'tracklist_review_started',
         {
@@ -60,7 +63,7 @@ export default function Home({ isAuthenticated, onLogin, onLogout }: HomeProps) 
         },
         { trackCount: data.tracks.length }
       );
-      navigate('/review', { state: { tracklistData: data, youtubeUrl: url } });
+      navigate('/review', { state: { tracklistData: data, youtubeUrl: submittedUrl } });
     },
   });
 
@@ -112,6 +115,27 @@ export default function Home({ isAuthenticated, onLogin, onLogout }: HomeProps) 
                 }}
               />
             </div>
+
+            {recentUrls.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium tracking-wide text-gray-500 uppercase">
+                  Recent links
+                </p>
+                <div className="space-y-2">
+                  {recentUrls.map((recentUrl) => (
+                    <button
+                      key={recentUrl}
+                      type="button"
+                      onClick={() => setUrl(recentUrl)}
+                      title={recentUrl}
+                      className="block w-full truncate rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-left text-sm text-gray-300 transition hover:border-gray-700 hover:bg-gray-800 hover:text-white cursor-pointer"
+                    >
+                      {recentUrl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <button
               onClick={() => mutation.mutate(url)}
