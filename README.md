@@ -98,7 +98,7 @@ Open <http://127.0.0.1:5173>. The SWA emulator proxies `/api/*` to the local Fun
 
 ## PWA
 
-The frontend is installable as a PWA. `public\manifest.webmanifest` defines the app name, theme colors, and install icons in `public\icons\`. The production build generates a Workbox service worker that precaches the app shell and same-origin static assets so repeat loads are fast and offline navigation can still render the SPA shell.
+The frontend is installable as a PWA. `public/manifest.webmanifest` defines the app name, theme colors, install icons in `public/icons/`, and a web share target so installed Android PWAs can receive shared YouTube links from apps like YouTube. The production build generates a Workbox service worker that precaches the app shell and same-origin static assets so repeat loads are fast and offline navigation can still render the SPA shell.
 
 Core features still require the network: Spotify sign-in/search/playlist creation, YouTube metadata, Azure AI Foundry extraction, and `/api/extract-tracklist` are not cached. New deployments install in the background and show an in-app "New version available" toast; choose **Reload** to activate the new service worker.
 
