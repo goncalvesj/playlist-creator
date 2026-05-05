@@ -53,7 +53,7 @@ export default function Home({ isAuthenticated, onLogin, onLogout }: HomeProps) 
     mutationFn: extractTracklist,
     onSuccess: (data, submittedUrl) => {
       sessionStorage.removeItem(PENDING_SHARED_URL_KEY);
-      setRecentUrls(saveRecentYoutubeUrl(submittedUrl));
+      setRecentUrls(saveRecentYoutubeUrl(submittedUrl, data.videoTitle));
       trackEvent(
         'tracklist_review_started',
         {
@@ -124,13 +124,18 @@ export default function Home({ isAuthenticated, onLogin, onLogout }: HomeProps) 
                 <div className="space-y-2">
                   {recentUrls.map((recentUrl) => (
                     <button
-                      key={recentUrl}
+                      key={recentUrl.url}
                       type="button"
-                      onClick={() => setUrl(recentUrl)}
-                      title={recentUrl}
-                      className="block w-full truncate rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-left text-sm text-gray-300 transition hover:border-gray-700 hover:bg-gray-800 hover:text-white cursor-pointer"
+                      onClick={() => setUrl(recentUrl.url)}
+                      title={`${recentUrl.title}\n${recentUrl.url}`}
+                      className="block w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-left transition hover:border-gray-700 hover:bg-gray-800 cursor-pointer"
                     >
-                      {recentUrl}
+                      <span className="block truncate text-sm font-medium text-gray-200">
+                        {recentUrl.title}
+                      </span>
+                      <span className="block truncate text-xs text-gray-500">
+                        {recentUrl.url}
+                      </span>
                     </button>
                   ))}
                 </div>

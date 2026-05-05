@@ -1,24 +1,31 @@
+import { isRecord } from './isRecord';
+
 const RECENT_YOUTUBE_URLS_KEY = 'playlist-creator:recent-youtube-urls';
 const MAX_RECENT_YOUTUBE_URLS = 5;
 
-function normalizeRecentYoutubeUrls(value: unknown) {
+export interface RecentYoutubeUrl {
+  title: string;
+  url: string;
+}
+
+function normalizeRecentYoutubeUrls(value: unknown): RecentYoutubeUrl[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const urls: string[] = [];
+  const entries: RecentYoutubeUrl[] = [];
   for (const item of value) {
-    if (typeof item !== 'string') {
+    if (!isRecord(item) || typeof item.title !== 'string' || typeof item.url !== 'string') {
       continue;
     }
 
-    const url = item.trim();
-    if (url && !urls.includes(url)) {
-      urls.push(url);
+    const url = item.url.trim();
+    if (url && !entries.some((entry) => entry.url === url)) {
+      entries.push({ title: item.title.trim(), url });
     }
   }
 
-  return urls.slice(0, MAX_RECENT_YOUTUBE_URLS);
+  return entries.slice(0, MAX_RECENT_YOUTUBE_URLS);
 }
 
 export function getRecentYoutubeUrls() {
@@ -31,8 +38,9 @@ export function getRecentYoutubeUrls() {
   }
 }
 
-export function saveRecentYoutubeUrl(url: string) {
+export function saveRecentYoutubeUrl(url: string, title: string) {
   const trimmedUrl = url.trim();
+  const trimmedTitle = title.trim();
   const recentUrls = getRecentYoutubeUrls();
 
   if (!trimmedUrl) {
@@ -40,8 +48,8 @@ export function saveRecentYoutubeUrl(url: string) {
   }
 
   const nextRecentUrls = [
-    trimmedUrl,
-    ...recentUrls.filter((recentUrl) => recentUrl !== trimmedUrl),
+    { title: trimmedTitle, url: trimmedUrl },
+    ...recentUrls.filter((recentUrl) => recentUrl.url !== trimmedUrl),
   ].slice(0, MAX_RECENT_YOUTUBE_URLS);
 
   try {
